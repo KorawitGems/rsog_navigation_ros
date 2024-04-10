@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- it work well even with 90 horizonal beam with 180 deg, sd = 0.05 lidar and cmd_vel 1.0 m/s and 1.0 rad/s -->
+  <node pkg="apmc_localization_ros" type="apmc_localization_ros_node" name="apmc_localization" respawn="false" output="screen">
+    <!-- <remap from="" to=""/> -->
+
+    <param name="map_frame" type="string" value="map"/>
+    <param name="odom_frame" type="string" value="odom"/>
+    <param name="base_frame" type="string" value="base_footprint"/>
+    <param name="linear_update" type="double" value="0.1"/>
+    <param name="angular_update" type="double" value="0.1"/>
+    <param name="sample_linear_resolution" type="double" value="0.05"/>
+    <param name="sample_linear_size" type="double" value="0.5"/>
+    <param name="sample_angular_resolution" type="double" value="1.0"/> <!-- degree -->
+    <param name="sample_angular_size" type="double" value="60.0"/> <!-- degree -->
+    <param name="hit_weight" type="double" value="0.8"/>
+    <param name="rand_weight" type="double" value="0.2"/>
+    <param name="sigma_hit" type="double" value="0.05"/>
+    <param name="inflated_occupied_radius" type="double" value="0.0"/> <!-- radius to set occupancy grid map to 100 -->
+  </node>
+
+</launch>

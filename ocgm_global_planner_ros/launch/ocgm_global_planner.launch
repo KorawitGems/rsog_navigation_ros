@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+
+  <node pkg="ocgm_global_planner_ros" type="ocgm_global_planner_ros_node" name="ocgm_global_planner" respawn="false"  output="screen">
+    <remap from="goal" to="/move_base_simple/goal"/>
+    <remap from="/global_planner/path" to="/global_planner/path"/>
+
+    <param name="map_frame" type="string" value="map"/>
+    <param name="odom_frame" type="string" value="odom"/>
+    <param name="base_frame" type="string" value="base_footprint"/>
+    <param name="obstacle_map/radius" type="double" value="1.0"/>
+    <param name="obstacle_map/weight" type="double" value="100.0"/>
+    <param name="obstacle_map/robot_radius" type="double" value="0.4"/>
+    <param name="obstacle_map/robot_weight" type="double" value="1000.0"/>
+    <param name="goal_cost/weight" type="double" value="5.0"/>
+    <param name="move_cost/weight" type="double" value="20.0"/>
+  </node>
+
+</launch>
