@@ -17,6 +17,7 @@
     <param name="hit_weight" type="double" value="0.8"/>
     <param name="rand_weight" type="double" value="0.2"/>
     <param name="sigma_hit" type="double" value="0.05"/>
+    <param name="laser_step" type="int" value="6"/>
     <param name="inflated_occupied_radius" type="double" value="0.0"/> <!-- radius to set occupancy grid map to 100 -->
   </node>
 

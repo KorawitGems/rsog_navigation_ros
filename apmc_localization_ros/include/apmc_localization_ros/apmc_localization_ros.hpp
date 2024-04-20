@@ -85,7 +85,7 @@ private:
 
     void gaussianProbability(const double& z, const double& sigma, double& output_p_hit);
 
-    void randProbability(const double& z_rand, double& output_p_rand);
+    void randomProbability(const double& z_rand, double& output_p_rand);
 
     void handleLocalization();
 
@@ -114,10 +114,11 @@ private:
     bool receive_map_msg_, receive_laser_msg_, receive_odom_msg_, is_initial_, found_particle_;
     double param_hit_weight_, param_rand_weight_, param_sigma_hit_, param_linear_update_, param_angular_update_, param_sample_linear_resolution_, param_sample_linear_size_, param_sample_angular_size_, param_sample_angular_resolution_, total_weight_, inflated_occupied_radius_;
     double p_rand_;
-    int particle_count_;
+    int particle_count_, param_laser_step_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     tf2_ros::TransformBroadcaster tf_broadcaster_;
+    std::vector<tf2::Transform> point_in_base_vector_;
     AOGMCommonMap common_map_;
 };
 

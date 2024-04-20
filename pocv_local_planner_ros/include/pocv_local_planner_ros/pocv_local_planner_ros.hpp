@@ -87,7 +87,7 @@ private:
     bool findBestVelocity(geometry_msgs::Twist& output_predict_cmd_vel);
     void calculateCost(const geometry_msgs::Twist& predict_cmd_vel, const double& punitive_cost, Cost& output_cost);
     void findAngularCmdVel(geometry_msgs::Twist& predict_cmd_vel);
-    void publishSimulatedPoses();
+    void publishSimulatedValues();
     void timerPublish(const ros::TimerEvent& event);
     void updatePlanner();
     void handleLookupTransform(const std::string& target_frame, const std::string& source_frame, geometry_msgs::TransformStamped& output_transform_stamped);
@@ -109,7 +109,7 @@ private:
     tf2_ros::TransformListener tf_listener_;
     tf2_ros::Buffer tf_buffer_;
     tf2::Quaternion q_local_point_, q_global_point_;
-    ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_;
+    ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_, last_time_global_point_in_obs_, last_time_skip_global_point_;
     bool receive_laser_msg_, receive_map_msg_, receive_odom_msg_, receive_path_map_, is_initial_, use_path_cost_, use_heading_to_local_point_, wait_heading_to_local_point_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     int index_path_radius_, index_laser_radius_, index_robot_radius_, index_local_planner_;

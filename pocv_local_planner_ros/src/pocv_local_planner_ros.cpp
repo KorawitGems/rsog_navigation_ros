@@ -89,6 +89,8 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     temp_sim_time_step_ = -0.1;
     last_time_intersect_ = ros::Time::now();
     last_time_achieve_goal_ = ros::Time::now();
+    last_time_global_point_in_obs_ = ros::Time::now();
+    last_time_skip_global_point_ = ros::Time::now();
 }
 
 void POCVLocalPlannerROS::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) { 
@@ -124,21 +126,22 @@ void POCVLocalPlannerROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& 
     laser_msg_ = *msg;
     handleLookupTransform(param_map_frame_, param_base_frame_, base_in_map_tf_msg_);
     handleLookupTransform(param_map_frame_, laser_msg_.header.frame_id, laser_in_map_tf_msg_);
-    if (!global_path_.poses.empty()) {
+    // set initial all value to negative to make low obstacle cost
+    if (!global_path_.poses.empty()) { 
         if (std::abs(global_path_.poses[0].pose.position.x - last_global_point_.pose.position.x) > 0.1 &&
-                std::abs(global_path_.poses[0].pose.position.y - last_global_point_.pose.position.y) > 0.1) { // different global point from last one
+                std::abs(global_path_.poses[0].pose.position.y - last_global_point_.pose.position.y) > 0.1) {
             last_global_point_ = global_path_.poses[0];
-            double initial_laser_map_value = -0.001*inflated_laser_weight_; // set all value to negative to make low obstacle cost
+            double initial_laser_map_value = -0.001*inflated_laser_weight_;
             std::fill(laser_map_.begin(), laser_map_.end(), initial_laser_map_value);
             std::fill(occupancy_map_.begin(), occupancy_map_.end(), 0);
             std::fill(local_map_.begin(), local_map_.end(), 0);
         }
     }
-
+    // create laser map as obstacle cost map
     if (!laser_msg_.ranges.empty()){
-        for (size_t i = 0; i < laser_msg_.ranges.size(); ++i) 
+        for (int i = 0; i < laser_msg_.ranges.size(); ++i) 
         {
-            if (!std::isnan(laser_msg_.ranges[i]) && !std::isinf(laser_msg_.ranges[i]) && laser_msg_.ranges[i] < laser_msg_.range_max) {
+            if (!std::isnan(laser_msg_.ranges[i]) && !std::isinf(laser_msg_.ranges[i]) && laser_msg_.ranges[i] < laser_msg_.range_max && laser_msg_.ranges[i] > laser_msg_.range_min) {
                 double angle = laser_msg_.angle_min + i * laser_msg_.angle_increment;
                 geometry_msgs::TransformStamped point_in_laser_tf_msg;
                 point_in_laser_tf_msg.transform.translation.x = laser_msg_.ranges[i] * std::cos(angle);
@@ -193,6 +196,7 @@ void POCVLocalPlannerROS::goalCallback(const geometry_msgs::PoseStamped::ConstPt
 void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg) {
     start_time_ = ros::Time::now();
     last_time_ = ros::Time::now() - ros::Duration(0.05); // assume first step time to calculate velocity and cost
+    // collect point every given distance along the path
     geometry_msgs::PoseStamped start_current;
     start_current.pose.position.x = base_in_map_tf_msg_.transform.translation.x;
     start_current.pose.position.y = base_in_map_tf_msg_.transform.translation.y;
@@ -203,7 +207,7 @@ void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg
                 std::pow(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y, 2)) > 2.0){
             // double delta_yaw = std::atan2(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y,
             //                             msg->poses[i].pose.position.x - global_path_.poses[global_path_.poses.size()-1].pose.position.x);
-            global_path_.poses.emplace_back(msg->poses[i]); // collect point every 0.5 distance
+            global_path_.poses.emplace_back(msg->poses[i]);
             // tf2::convert(tf2::Quaternion(tf2::Vector3(0, 0, 1), delta_yaw), global_path_.poses[global_path_.poses.size()-1].pose.orientation);
         }
     }
@@ -220,17 +224,21 @@ void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg
 bool POCVLocalPlannerROS::createPathMap() {
     int map_index_x, map_index_y; // check global point is in obstacle
     if (!global_path_.poses.empty()) {
-        common_map_.positionToMapIndex(global_path_.poses[0].pose.position.x, global_path_.poses[0].pose.position.y, map_index_x, map_index_y);
-        if (local_map_[map_index_x + map_index_y * common_map_.map_msg_.info.width] == 100) {
-            ROS_WARN("Global point is in obstacle, skip global point");
-            global_path_.poses.erase(global_path_.poses.begin());
-            return false;
+        if (ros::Time::now() - last_time_global_point_in_obs_ > ros::Duration(1.0)) {
+            common_map_.positionToMapIndex(global_path_.poses[0].pose.position.x, global_path_.poses[0].pose.position.y, map_index_x, map_index_y);
+            if (local_map_[map_index_x + map_index_y * common_map_.map_msg_.info.width] == 100) {
+                ROS_WARN("Global point is in obstacle, skip global point");
+                global_path_.poses.erase(global_path_.poses.begin());
+                last_time_global_point_in_obs_ = ros::Time::now();
+                return false;
+            }
         }
     }
 
     if (global_path_.poses.empty()) {
         return false;
     }
+    // find local path planner
     local_path_.poses.clear(); // set start and goal in planner_
     common_map_.positionToMapIndex(global_path_.poses[0].pose.position.x, global_path_.poses[0].pose.position.y, planner_.goal_index_.x, planner_.goal_index_.y);
     common_map_.positionToMapIndex(base_in_map_tf_msg_.transform.translation.x, base_in_map_tf_msg_.transform.translation.y, planner_.start_index_.x, planner_.start_index_.y);
@@ -246,12 +254,15 @@ bool POCVLocalPlannerROS::createPathMap() {
             break;
         }
     }
-    if (!found_path){
-        ROS_WARN("No valid local path found, skip global point");
-        global_path_.poses.erase(global_path_.poses.begin());
+    if (!found_path) {
+        if (ros::Time::now() - last_time_skip_global_point_ > ros::Duration(1.0) ) {
+            ROS_WARN("No valid local path found, skip global point");
+            global_path_.poses.erase(global_path_.poses.begin());
+            last_time_skip_global_point_ = ros::Time::now();
+        }
         return false;
     }
-    
+    // create path cost map
     double initial_path_map_value = 0.001*inflated_path_weight_;
     std::fill(path_map_.begin(), path_map_.end(), initial_path_map_value); //  set all value to positive to make high path cost
     
@@ -362,8 +373,8 @@ bool POCVLocalPlannerROS::findBestVelocity(geometry_msgs::Twist& output_predict_
             }
         }
     }
-    ROS_INFO("\033[1;31m obstacle_cost: %f,\033[1;32m goal_cost:  %f,\033[1;34m path_cost: %f\033[0m", best_cost.obstacle, best_cost.goal, best_cost.path);
-    ROS_INFO("Best total cost %f have vel %f, %f, %f", best_cost.total, output_predict_cmd_vel.linear.x, output_predict_cmd_vel.linear.y, output_predict_cmd_vel.angular.z);
+    //ROS_INFO("\033[1;31m obstacle_cost: %f,\033[1;32m goal_cost:  %f,\033[1;34m path_cost: %f\033[0m", best_cost.obstacle, best_cost.goal, best_cost.path);
+    //ROS_INFO("Best total cost %f have vel %f, %f, %f", best_cost.total, output_predict_cmd_vel.linear.x, output_predict_cmd_vel.linear.y, output_predict_cmd_vel.angular.z);
     return found_vel;
 }
 
@@ -435,7 +446,7 @@ void POCVLocalPlannerROS::findAngularCmdVel(geometry_msgs::Twist& predict_cmd_ve
     //ROS_INFO("predict_cmd_vel.angular.z = %f", predict_cmd_vel.angular.z);
 }
 
-void POCVLocalPlannerROS::publishSimulatedPoses() {
+void POCVLocalPlannerROS::publishSimulatedValues() {
     // sim_vel_cloud_ptr_->is_dense = true;
     // sensor_msgs::PointCloud2 sim_vel_cloud_msg;
     // pcl::toROSMsg(*sim_vel_cloud_ptr_, sim_vel_cloud_msg);
@@ -454,7 +465,7 @@ void POCVLocalPlannerROS::publishSimulatedPoses() {
 void POCVLocalPlannerROS::timerPublish(const ros::TimerEvent& event)
 {
     if (is_initial_) {
-        publishSimulatedPoses();
+        publishSimulatedValues();
     }
 }
 
@@ -462,6 +473,7 @@ void POCVLocalPlannerROS::updatePlanner() {
     double frequency = 10.0;
     ros::Rate rate(frequency);
     while (ros::ok()) {
+        ros::Time start_time = ros::Time::now();
         ros::spinOnce(); // call callback msg
         time_step_ = (start_time_ - last_time_).toSec();
         if (time_step_ < 1.0/frequency) {
@@ -503,7 +515,7 @@ void POCVLocalPlannerROS::updatePlanner() {
                 state_ = ACHIEVE_GLOBAL_POINT;
                 if (std::abs(goal_.pose.position.x - base_in_map_tf_msg_.transform.translation.x) < 0.5 &&
                         std::abs(goal_.pose.position.y - base_in_map_tf_msg_.transform.translation.y) < 0.5) {
-                    ROS_INFO("\033[1;35m Near goal \033[0m");
+                    //ROS_INFO("\033[1;35m Near goal \033[0m");
                     state_ = TIME_UP_GLOBAL_POINT;
                     use_path_cost_ = false;
                     use_heading_to_local_point_ = true;
@@ -519,7 +531,7 @@ void POCVLocalPlannerROS::updatePlanner() {
                 if (!global_path_.poses.empty()) {
                     if (std::abs(global_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x) < global_point_tolerance_ &&
                             std::abs(global_path_.poses[0].pose.position.y - base_in_map_tf_msg_.transform.translation.y) < global_point_tolerance_) {
-                        ROS_INFO("Achieve global point");
+                        //ROS_INFO("Achieve global point");
                         cmd_vel_pub_.publish(geometry_msgs::Twist());
                         global_path_.poses.erase(global_path_.poses.begin());
                         state_ = Heading_To_GLOBAL_POINT;
@@ -640,14 +652,16 @@ void POCVLocalPlannerROS::updatePlanner() {
                     start_time_ = ros::Time::now();
                     bool found_velocity = findBestVelocity(predict_cmd_vel_);
                     last_time_ = ros::Time::now();
-                    ROS_WARN("Time execution to find best velocity : %f seconds", (last_time_ - start_time_).toSec());
-                    if (found_velocity){
-                        if (wait_heading_to_local_point_){
+                    //ROS_WARN("Time execution to find best velocity : %f seconds", (last_time_ - start_time_).toSec());
+                    if (found_velocity) {
+                        if (wait_heading_to_local_point_) {
                             predict_cmd_vel_.angular.z = 0.0;
                         } else {
                             predict_cmd_vel_.angular.z = cmd_ang_vz_;
                         }
                         cmd_vel_pub_.publish(predict_cmd_vel_);
+                        //ROS_WARN("Time execution of local planner simulating velocity : %f seconds", (ros::Time::now() - start_time).toSec());     
+                        rate.sleep();
                     } else{
                         cmd_vel_pub_.publish(geometry_msgs::Twist());
                     }
@@ -655,7 +669,6 @@ void POCVLocalPlannerROS::updatePlanner() {
                 break;
         }
         last_cmd_vel_ = predict_cmd_vel_;
-        rate.sleep();
     }
 }
 

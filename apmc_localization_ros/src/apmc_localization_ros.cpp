@@ -43,6 +43,7 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
     pnh_.param<double>("hit_weight", param_hit_weight_, 0.8);
     pnh_.param<double>("rand_weight", param_rand_weight_, 0.2);
     pnh_.param<double>("sigma_hit", param_sigma_hit_, 0.01);
+    pnh_.param<int>("laser_step", param_laser_step_, 1);
     pnh_.param<double>("inflated_occupied_radius", inflated_occupied_radius_, 0.1);
     particle_count_ = std::ceil((param_sample_linear_size_ / param_sample_linear_resolution_) * (param_sample_linear_size_ / param_sample_linear_resolution_) * (param_sample_angular_size_ / param_sample_angular_resolution_));
     receive_map_msg_ = false;
@@ -88,6 +89,24 @@ void APMCLocalizationROS::initializeNode() {
     initial_particle_pose_.pose.pose.orientation = tf2::toMsg(odom_in_map_tf2.getRotation());
     initial_particle_pose_.header.stamp = ros::Time::now();
     initial_particle_pose_.header.frame_id = param_map_frame_;
+
+    point_in_base_vector_.resize(std::ceil(laser_msg_.ranges.size()/param_laser_step_));
+}
+
+void APMCLocalizationROS::initializeProcess()
+{
+    randomProbability(laser_msg_.range_max, p_rand_);
+    handleLookupTransform(param_base_frame_, laser_msg_.header.frame_id, laser_in_base_tf_msg_);
+    handleLocalization();
+    ROS_INFO("Initialized apmc localization");
+    is_initial_ = true;
+}
+
+void APMCLocalizationROS::run()
+{
+    initializeNode();
+    initializeProcess();
+    updateLocalization();
 }
 
 void APMCLocalizationROS::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) { 
@@ -95,14 +114,13 @@ void APMCLocalizationROS::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& m
         return;
     }
     common_map_.map_msg_ = *msg;
-
     grid_map_.resize(msg->info.width*msg->info.height);
     int index_occupied_radius = std::floor(inflated_occupied_radius_ / msg->info.resolution);
     for (int i = 0; i < msg->info.width; ++i) {
         for (int j = 0; j < msg->info.height; ++j) {
             grid_map_[j * msg->info.width + i] = msg->data[j * msg->info.width + i];
         }
-    } // finish copy before apply inflated radius to avoid APMCLocalizationROS::give new cell which is value 100 to 0
+    } // finish copy before apply inflated radius
     for (int i = 0; i < msg->info.width; ++i) {
         for (int j = 0; j < msg->info.height; ++j) {
             if (msg->data[j * msg->info.width + i] == 100) {
@@ -124,8 +142,23 @@ void APMCLocalizationROS::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& m
 void APMCLocalizationROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& msg) {
     odom_msg_ = current_odom_msg_; // odom msg when receive laser msg
     laser_msg_ = *msg;
-    geometry_msgs::TransformStamped base_in_map_tf_msg;
-    if (is_initial_){
+    point_in_base_vector_.clear();
+    for (size_t i = 0; i < laser_msg_.ranges.size(); i += param_laser_step_) {
+        if (!std::isnan(laser_msg_.ranges[i]) && !std::isinf(laser_msg_.ranges[i]) && laser_msg_.ranges[i] < laser_msg_.range_max && laser_msg_.ranges[i] > laser_msg_.range_min) {
+            double angle = laser_msg_.angle_min + i * laser_msg_.angle_increment;
+            geometry_msgs::TransformStamped point_in_laser_tf_msg;
+            point_in_laser_tf_msg.transform.translation.x = laser_msg_.ranges[i] * std::cos(angle);
+            point_in_laser_tf_msg.transform.translation.y = laser_msg_.ranges[i] * std::sin(angle);
+            point_in_laser_tf_msg.transform.translation.z = 0.0;
+            point_in_laser_tf_msg.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), 0.0));
+            tf2::Transform point_in_laser_tf2, laser_in_base_tf2;
+            tf2::convert(point_in_laser_tf_msg.transform, point_in_laser_tf2); 
+            tf2::convert(laser_in_base_tf_msg_.transform, laser_in_base_tf2); 
+            tf2::Transform point_in_base_tf2 = laser_in_base_tf2 * point_in_laser_tf2;
+            point_in_base_vector_.emplace_back(point_in_base_tf2);
+        }
+    }
+    if (is_initial_) {
         tf2::Transform base_in_odom_tf2;
         tf2::convert(odom_msg_.pose.pose, base_in_odom_tf2);
         tf2::Transform odom_in_map_tf2;
@@ -167,7 +200,7 @@ void APMCLocalizationROS::uniformGenerateSample()
     for (int i = min_index_linear; i <= max_index_linear; ++i) {
         for (int j = min_index_linear; j <= max_index_linear; ++j) {
             for (int t = min_index_angular; t <= max_index_angular; ++t) { // max range -3.14 < yaw < 3.14
-                Particle particle = Particle(); // real time initial pose
+                Particle particle = Particle();
                 particle.x = initial_particle_pose_.pose.pose.position.x + i *param_sample_linear_resolution_;
                 particle.y = initial_particle_pose_.pose.pose.position.y + j *param_sample_linear_resolution_;
                 int map_index_x, map_index_y;
@@ -193,23 +226,7 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
     double p_hit = 0.0;
     tf2::Quaternion q;
     particle.weight = 0.0;
-
-    for (size_t i = 0; i < laser_msg_.ranges.size(); ++i) 
-    {
-        if (std::isnan(laser_msg_.ranges[i]) || std::isinf(laser_msg_.ranges[i]) || laser_msg_.ranges[i] >= laser_msg_.range_max || laser_msg_.ranges[i] <= laser_msg_.range_min) {
-            continue;
-        }
-        double angle = laser_msg_.angle_min + i * laser_msg_.angle_increment;
-        geometry_msgs::TransformStamped point_in_laser_tf_msg;
-        point_in_laser_tf_msg.transform.translation.x = laser_msg_.ranges[i] * std::cos(angle);
-        point_in_laser_tf_msg.transform.translation.y = laser_msg_.ranges[i] * std::sin(angle);
-        point_in_laser_tf_msg.transform.translation.z = 0.0;
-        point_in_laser_tf_msg.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), 0.0));
-        tf2::Transform point_in_laser_tf2, laser_in_base_tf2;
-        tf2::convert( point_in_laser_tf_msg.transform, point_in_laser_tf2); 
-        tf2::convert( laser_in_base_tf_msg_.transform, laser_in_base_tf2); 
-        tf2::Transform point_in_base_tf2 = laser_in_base_tf2 * point_in_laser_tf2;
-
+    for (const auto &point_in_base : point_in_base_vector_) {
         geometry_msgs::TransformStamped particle_in_map_tf_msg_;
         particle_in_map_tf_msg_.transform.translation.x = particle.x;
         particle_in_map_tf_msg_.transform.translation.y = particle.y;
@@ -217,8 +234,8 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
         particle_in_map_tf_msg_.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), particle.theta));
         
         tf2::Transform particle_in_map_tf2;
-        tf2::convert(particle_in_map_tf_msg_.transform, particle_in_map_tf2); 
-        tf2::Transform point_in_map_tf2 = particle_in_map_tf2 * point_in_base_tf2;
+        tf2::convert(particle_in_map_tf_msg_.transform, particle_in_map_tf2);
+        tf2::Transform point_in_map_tf2 = particle_in_map_tf2 * point_in_base;
         geometry_msgs::TransformStamped point_in_map_tf_msg;
         point_in_map_tf_msg.transform = tf2::toMsg(point_in_map_tf2);
         int map_index_x, map_index_y;
@@ -228,24 +245,22 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
                 double occ_grid_in_global_x, occ_grid_in_global_y;
                 common_map_.mapIndexToPosition(map_index_x, map_index_y, occ_grid_in_global_x, occ_grid_in_global_y);
                 double z_distance_square = std::pow(point_in_map_tf_msg.transform.translation.x-occ_grid_in_global_x, 2) + std::pow(point_in_map_tf_msg.transform.translation.y-occ_grid_in_global_y, 2);
-                if (sqrt(z_distance_square) > 0.05) // laser match grid map not well
-                {
-                    particle.weight = -1.0; //reject
+                if (sqrt(z_distance_square) > 0.6*common_map_.map_msg_.info.resolution) {
+                    particle.weight = -1.0; // reject due to laser do not match grid map well
                     break;
                 }
                 gaussianProbability(z_distance_square, param_sigma_hit_, p_hit);
             } else {
-                p_hit = -2.0; // laser do not align grid map
+                p_hit = -3.0; // laser do not align grid map
             }
         } else {
-            particle.weight = -1.0; //reject
+            particle.weight = -1.0; // reject due to laser out of map
             break;
         }
         particle.weight += param_hit_weight_ * p_hit + param_rand_weight_ * p_rand_;
     }
-
-    if (particle.weight > max_weight_particle_.weight) 
-    {
+    //ROS_INFO("particle.weight : %f", max_weight_particle_.weight);
+    if (particle.weight > max_weight_particle_.weight) {
         found_particle_ = true;
         max_weight_particle_ = particle;
     }
@@ -255,7 +270,7 @@ void APMCLocalizationROS::gaussianProbability(const double& z, const double& sig
     output_p_hit = (1.0 / (std::sqrt(2.0 * M_PI) * sigma)) * std::exp(-0.5 * std::pow((z) / sigma, 2));
 }
 
-void APMCLocalizationROS::randProbability(const double& z_rand, double& output_p_rand) {
+void APMCLocalizationROS::randomProbability(const double& z_rand, double& output_p_rand) {
     output_p_rand = 1.0 / z_rand;
 }
 
@@ -268,10 +283,9 @@ void APMCLocalizationROS::handleLocalization() {
         max_weight_particle_.weight = 0.0;
         //ros::Time start_time = ros::Time::now();
         uniformGenerateSample();
-        //ros::Time end_time = ros::Time::now();
-        //ROS_WARN("Time execution of uniformGenerateSample() : %f seconds", (end_time - start_time).toSec());
+        //ROS_WARN("Time execution of uniformGenerateSample() : %f seconds", (ros::Time::now() - start_time).toSec());
         if (found_particle_){
-            //ROS_INFO("\033[1;32m Successfully found best particle to localize \033[0m");
+            //ROS_INFO("\033[1;32m Successfully found best particle to localize : weight = %f \033[0m", max_weight_particle_.weight);
             preparePublisher(max_weight_particle_);
         }
     }
@@ -279,9 +293,10 @@ void APMCLocalizationROS::handleLocalization() {
 
 void APMCLocalizationROS::updateLocalization()
 {
-    ros::Rate rate(20);
+    ros::Rate rate(30);
     while (ros::ok()) 
     {
+        ros::Time start_time = ros::Time::now();
         ros::spinOnce();
         tf2::Quaternion delta_q, odom_q, inv_last_q; 
         tf2::convert(odom_msg_.pose.pose.orientation, odom_q);
@@ -301,6 +316,7 @@ void APMCLocalizationROS::updateLocalization()
             //ros::Time end_time = ros::Time::now();
             //ROS_INFO("Time execution of localization : %f seconds", (end_time - start_time).toSec());
             last_robot_pose_ = odom_msg_.pose.pose;
+            //ROS_WARN("Time execution of localization : %f seconds", (ros::Time::now() - start_time).toSec());
         }
         rate.sleep();
     }
@@ -355,20 +371,4 @@ void APMCLocalizationROS::handleLookupTransform(const std::string& target_frame,
     } catch (const tf2::TransformException& ex) {
         ROS_WARN("%s", ex.what());
     }
-}
-
-void APMCLocalizationROS::run()
-{
-    initializeNode();
-    initializeProcess();
-    updateLocalization();
-}
-
-void APMCLocalizationROS::initializeProcess()
-{
-    randProbability(laser_msg_.range_max, p_rand_);
-    handleLookupTransform(param_base_frame_, laser_msg_.header.frame_id, laser_in_base_tf_msg_);
-    handleLocalization();
-    ROS_INFO("Initialized apmc localization");
-    is_initial_ = true;
 }
