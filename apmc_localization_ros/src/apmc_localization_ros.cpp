@@ -58,13 +58,13 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
     
     estimate_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/estimated_pose", 1);
     odom_in_map_pub_ = nh_.advertise<geometry_msgs::TransformStamped>("/odom_in_map", 1);
-    loop_pub_timer_ = nh_.createTimer(ros::Duration(0.03), &APMCLocalizationROS::publishTfTimer, this);
+    loop_pub_timer_ = nh_.createTimer(ros::Duration(0.02), &APMCLocalizationROS::publishTfTimer, this);
 }
 
 APMCLocalizationROS::~APMCLocalizationROS(){}
 
 void APMCLocalizationROS::initializeNode() {
-    ros::Rate r(10); // wait to receive msg
+    ros::Rate r(50); // wait to receive msg
     while (!(receive_map_msg_ && receive_laser_msg_ && receive_odom_msg_)) {
         ros::spinOnce();
         r.sleep();
@@ -226,6 +226,7 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
     double p_hit = 0.0;
     tf2::Quaternion q;
     particle.weight = 0.0;
+    double distance_tol = 0.6*common_map_.map_msg_.info.resolution;
     for (const auto &point_in_base : point_in_base_vector_) {
         geometry_msgs::TransformStamped particle_in_map_tf_msg_;
         particle_in_map_tf_msg_.transform.translation.x = particle.x;
@@ -245,13 +246,12 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
                 double occ_grid_in_global_x, occ_grid_in_global_y;
                 common_map_.mapIndexToPosition(map_index_x, map_index_y, occ_grid_in_global_x, occ_grid_in_global_y);
                 double z_distance_square = std::pow(point_in_map_tf_msg.transform.translation.x-occ_grid_in_global_x, 2) + std::pow(point_in_map_tf_msg.transform.translation.y-occ_grid_in_global_y, 2);
-                if (sqrt(z_distance_square) > 0.6*common_map_.map_msg_.info.resolution) {
-                    particle.weight = -1.0; // reject due to laser do not match grid map well
-                    break;
-                }
                 gaussianProbability(z_distance_square, param_sigma_hit_, p_hit);
+                if (sqrt(z_distance_square) > distance_tol) {
+                    p_hit = -2.0; // reduce probability due to laser do not match grid map well
+                }
             } else {
-                p_hit = -3.0; // laser do not align grid map
+                p_hit = -2.0; // laser do not align occupancy grid map
             }
         } else {
             particle.weight = -1.0; // reject due to laser out of map
@@ -293,7 +293,7 @@ void APMCLocalizationROS::handleLocalization() {
 
 void APMCLocalizationROS::updateLocalization()
 {
-    ros::Rate rate(30);
+    ros::Rate rate(50);
     while (ros::ok()) 
     {
         ros::Time start_time = ros::Time::now();

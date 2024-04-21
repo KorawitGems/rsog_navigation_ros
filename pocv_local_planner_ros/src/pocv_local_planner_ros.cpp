@@ -479,13 +479,30 @@ void POCVLocalPlannerROS::updatePlanner() {
         if (time_step_ < 1.0/frequency) {
             time_step_ = 1.0/frequency;
         }
-        tf2::Quaternion delta_q, inv_q_base_in_map; 
+        tf2::Quaternion delta_q, inv_q_base_in_map, q_goal; 
         switch (state_) {
             case WAIT_FOR_GOAL:
                 if (ros::Time::now() - last_time_achieve_goal_ > ros::Duration(10.0)) {
                     ROS_INFO("Waiting for goal ...");
                     last_time_achieve_goal_ = ros::Time::now();
                     // change state from callback global path msg
+                }
+                break;
+
+            case Heading_To_Goal:
+                tf2::convert(goal_.pose.orientation, q_goal);
+                tf2::convert(base_in_map_tf_msg_.transform.rotation, inv_q_base_in_map);
+                inv_q_base_in_map[3] = -inv_q_base_in_map[3];
+                delta_q = q_goal*inv_q_base_in_map;
+                delta_q.normalize();
+                delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
+                if (std::abs(delta_yaw_from_current_base_) > 0.05) {
+                    findAngularCmdVel(predict_cmd_vel_);
+                    cmd_vel_pub_.publish(predict_cmd_vel_);
+                } else {
+                    cmd_vel_pub_.publish(geometry_msgs::Twist());
+                    ROS_INFO("\033[1;32m Successfully rotate heading to goal \033[0m");
+                    state_ = WAIT_FOR_GOAL;
                 }
                 break;
 
@@ -501,7 +518,7 @@ void POCVLocalPlannerROS::updatePlanner() {
                         }
                         global_path_.poses.clear();
                         local_path_.poses.clear();
-                        state_ = WAIT_FOR_GOAL;
+                        state_ = Heading_To_Goal;
                         use_path_cost_ = true;
                         // sim_time_step_ = temp_sim_time_step_; // reset param
                         // temp_sim_time_step_ = -0.1;
@@ -518,7 +535,7 @@ void POCVLocalPlannerROS::updatePlanner() {
                     //ROS_INFO("\033[1;35m Near goal \033[0m");
                     state_ = TIME_UP_GLOBAL_POINT;
                     use_path_cost_ = false;
-                    use_heading_to_local_point_ = true;
+                    use_heading_to_local_point_ = false;
                     // if (temp_sim_time_step_ < 0.0) {
                     //     temp_sim_time_step_ = sim_time_step_; 
                     // }
@@ -536,7 +553,6 @@ void POCVLocalPlannerROS::updatePlanner() {
                         global_path_.poses.erase(global_path_.poses.begin());
                         state_ = Heading_To_GLOBAL_POINT;
                         receive_path_map_ = false;
-                        use_heading_to_local_point_ = true;
                         last_time_local_goal_ = ros::Time::now();
                     }
                 }
@@ -551,7 +567,6 @@ void POCVLocalPlannerROS::updatePlanner() {
                         global_path_.poses.erase(global_path_.poses.begin()); // // time out to achieve local goal, then skip local goal
                         receive_path_map_ = false;
                         state_ = PLAN_PATH;
-                        use_heading_to_local_point_ = true;
                         last_time_local_goal_ = ros::Time::now();
                     }
                 } else {
@@ -606,7 +621,6 @@ void POCVLocalPlannerROS::updatePlanner() {
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
                     state_ = PLAN_PATH;
                     receive_path_map_ = false;
-                    use_heading_to_local_point_ = true;
                     last_time_intersect_ = ros::Time::now();
                 }
                 break; 

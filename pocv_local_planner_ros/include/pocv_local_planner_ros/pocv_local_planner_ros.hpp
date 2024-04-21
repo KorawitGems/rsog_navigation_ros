@@ -60,6 +60,7 @@ struct Cost {
 
 enum State {
     WAIT_FOR_GOAL,
+    Heading_To_Goal,
     ACHIEVE_GOAL,
     NEAR_GOAL,
     ACHIEVE_GLOBAL_POINT,
