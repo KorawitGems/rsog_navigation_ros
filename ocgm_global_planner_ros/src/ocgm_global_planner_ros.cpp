@@ -41,14 +41,14 @@ OCGMGlobalPlannerROS::OCGMGlobalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", param_base_frame_, "base_footprint");
     pnh_.param<double>("obstacle_map/radius", inflated_obstacle_radius_, 0.7);
-    pnh_.param<double>("obstacle_map/weight", inflated_obstacle_weight_, 1000.0);
+    pnh_.param<double>("obstacle_map/weight", inflated_obstacle_weight_, 100.0);
     pnh_.param<double>("obstacle_map/robot_radius", inflated_robot_radius_, 0.3);
-    pnh_.param<double>("obstacle_map/robot_weight", inflated_robot_weight_, 10000.0);
-    pnh_.param<double>("goal_cost/weight", goal_cost_weight_, 10.0);
-    pnh_.param<double>("move_cost/weight", move_cost_weight_, 5.0);
+    pnh_.param<double>("obstacle_map/robot_weight", inflated_robot_weight_, 1000.0);
+    pnh_.param<double>("goal_cost/weight", goal_cost_weight_, 5.0);
+    pnh_.param<double>("move_cost/weight", move_cost_weight_, 10.0);
 
     ComponentMapState_ = false;
-    timer_publisher = nh_.createTimer(ros::Duration(0.025), &OCGMGlobalPlannerROS::getRobotPositionCallback, this);
+    timer_publisher = nh_.createTimer(ros::Duration(0.02), &OCGMGlobalPlannerROS::getRobotPositionCallback, this);
 
     occupancy_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
     robot_radius_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);

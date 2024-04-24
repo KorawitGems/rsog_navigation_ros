@@ -29,7 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 #include <apmc_localization_ros/apmc_localization_ros.hpp>
 
-APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~"), initial_particle_pose_() 
+APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~"), initial_particle_pose_cov_() 
 {
     pnh_.param<std::string>("map_frame", param_map_frame_, "map");
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
@@ -38,14 +38,17 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
     pnh_.param<double>("angular_update", param_angular_update_, 2.0);
     pnh_.param<double>("sample_linear_resolution", param_sample_linear_resolution_, 0.05);
     pnh_.param<double>("sample_linear_size", param_sample_linear_size_, 0.5);
-    pnh_.param<double>("sample_angular_resolution", param_sample_angular_resolution_, 1.0); // deg
+    pnh_.param<double>("resample_linear_resolution", param_resample_linear_resolution_, 0.01);
+    pnh_.param<double>("resample_linear_size", param_resample_linear_size_, 0.05);
+    pnh_.param<double>("sample_angular_resolution", param_sample_angular_resolution_, 2.0); // deg
     pnh_.param<double>("sample_angular_size", param_sample_angular_size_, 40.0); // deg
+    pnh_.param<double>("resample_angular_resolution", param_resample_angular_resolution_, 0.5); // deg
+    pnh_.param<double>("resample_angular_size", param_resample_angular_size_, 2.0); // deg
     pnh_.param<double>("hit_weight", param_hit_weight_, 0.8);
     pnh_.param<double>("rand_weight", param_rand_weight_, 0.2);
     pnh_.param<double>("sigma_hit", param_sigma_hit_, 0.01);
     pnh_.param<int>("laser_step", param_laser_step_, 1);
     pnh_.param<double>("inflated_occupied_radius", inflated_occupied_radius_, 0.1);
-    particle_count_ = std::ceil((param_sample_linear_size_ / param_sample_linear_resolution_) * (param_sample_linear_size_ / param_sample_linear_resolution_) * (param_sample_angular_size_ / param_sample_angular_resolution_));
     receive_map_msg_ = false;
     receive_laser_msg_ = false;
     receive_odom_msg_ = false;
@@ -83,12 +86,12 @@ void APMCLocalizationROS::initializeNode() {
     
     tf2::Transform odom_in_map_tf2;
     tf2::convert(odom_in_map_tf_msg_.transform, odom_in_map_tf2); // convert can not use stamped
-    initial_particle_pose_.pose.pose.position.x = odom_in_map_tf_msg_.transform.translation.x;
-    initial_particle_pose_.pose.pose.position.y = odom_in_map_tf_msg_.transform.translation.y;
-    initial_particle_pose_.pose.pose.position.z = odom_in_map_tf_msg_.transform.translation.z;
-    initial_particle_pose_.pose.pose.orientation = tf2::toMsg(odom_in_map_tf2.getRotation());
-    initial_particle_pose_.header.stamp = ros::Time::now();
-    initial_particle_pose_.header.frame_id = param_map_frame_;
+    initial_particle_pose_cov_.pose.pose.position.x = odom_in_map_tf_msg_.transform.translation.x;
+    initial_particle_pose_cov_.pose.pose.position.y = odom_in_map_tf_msg_.transform.translation.y;
+    initial_particle_pose_cov_.pose.pose.position.z = odom_in_map_tf_msg_.transform.translation.z;
+    initial_particle_pose_cov_.pose.pose.orientation = tf2::toMsg(odom_in_map_tf2.getRotation());
+    initial_particle_pose_cov_.header.stamp = ros::Time::now();
+    initial_particle_pose_cov_.header.frame_id = param_map_frame_;
 
     point_in_base_vector_.resize(std::ceil(laser_msg_.ranges.size()/param_laser_step_));
 }
@@ -166,10 +169,10 @@ void APMCLocalizationROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& 
         tf2::Transform base_in_map_tf2 = odom_in_map_tf2 * base_in_odom_tf2;
         geometry_msgs::TransformStamped base_in_map_tf_msg;
         base_in_map_tf_msg.transform = tf2::toMsg(base_in_map_tf2);
-        initial_particle_pose_.pose.pose.position.x = base_in_map_tf_msg.transform.translation.x;
-        initial_particle_pose_.pose.pose.position.y = base_in_map_tf_msg.transform.translation.y;
-        initial_particle_pose_.pose.pose.position.z = base_in_map_tf_msg.transform.translation.z;
-        initial_particle_pose_.pose.pose.orientation = base_in_map_tf_msg.transform.rotation;
+        initial_particle_pose_cov_.pose.pose.position.x = base_in_map_tf_msg.transform.translation.x;
+        initial_particle_pose_cov_.pose.pose.position.y = base_in_map_tf_msg.transform.translation.y;
+        initial_particle_pose_cov_.pose.pose.position.z = base_in_map_tf_msg.transform.translation.z;
+        initial_particle_pose_cov_.pose.pose.orientation = base_in_map_tf_msg.transform.rotation;
     }
     receive_laser_msg_ = true;
 }
@@ -190,25 +193,25 @@ void APMCLocalizationROS::initialPoseCallback(const geometry_msgs::PoseWithCovar
     preparePublisher(command_particle);
 }
 
-void APMCLocalizationROS::uniformGenerateSample()
+void APMCLocalizationROS::generateSamples(double& linear_size, double& angular_size, 
+                                    double& linear_resolution, double& angular_resolution, geometry_msgs::PoseWithCovarianceStamped& initial_particle_pose)
 {
-    tf2::Quaternion quat;
-    int min_index_linear = -std::round(param_sample_linear_size_ /param_sample_linear_resolution_ / 2);
-    int max_index_linear = std::round(param_sample_linear_size_ /param_sample_linear_resolution_ / 2);
-    int min_index_angular = -std::round(param_sample_angular_size_ /param_sample_angular_resolution_ / 2);
-    int max_index_angular = std::round(param_sample_angular_size_ /param_sample_angular_resolution_ / 2);
+    int min_index_linear = -std::round(linear_size/linear_resolution/2);
+    int max_index_linear = std::round(linear_size/linear_resolution/2);
+    int min_index_angular = -std::round(angular_size/angular_resolution/2);
+    int max_index_angular = std::round(angular_size/angular_resolution/2);
     for (int i = min_index_linear; i <= max_index_linear; ++i) {
         for (int j = min_index_linear; j <= max_index_linear; ++j) {
             for (int t = min_index_angular; t <= max_index_angular; ++t) { // max range -3.14 < yaw < 3.14
                 Particle particle = Particle();
-                particle.x = initial_particle_pose_.pose.pose.position.x + i *param_sample_linear_resolution_;
-                particle.y = initial_particle_pose_.pose.pose.position.y + j *param_sample_linear_resolution_;
+                particle.x = initial_particle_pose.pose.pose.position.x + i*linear_resolution;
+                particle.y = initial_particle_pose.pose.pose.position.y + j*linear_resolution;
                 int map_index_x, map_index_y;
                 common_map_.positionToMapIndex(particle.x, particle.y, map_index_x, map_index_y);
                 if (common_map_.isInMap(map_index_x, map_index_y) && common_map_.isFreeInMap(map_index_x, map_index_y)) {
                     tf2::Quaternion q_predict, q_rot, q_initial_particle;
-                    tf2::convert(initial_particle_pose_.pose.pose.orientation, q_initial_particle);
-                    double delta_theta = t *param_sample_angular_resolution_ *M_PI /180;
+                    tf2::convert(initial_particle_pose.pose.pose.orientation, q_initial_particle);
+                    double delta_theta = t*angular_resolution*M_PI/180;
                     double delta_yaw = std::atan2(std::sin(delta_theta), std::cos(delta_theta));
                     q_rot.setRPY(0.0, 0.0, delta_yaw);
                     q_predict = q_rot*q_initial_particle;
@@ -245,9 +248,9 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
             if (grid_map_[map_index_x + map_index_y* common_map_.map_msg_.info.width] == 100) {
                 double occ_grid_in_global_x, occ_grid_in_global_y;
                 common_map_.mapIndexToPosition(map_index_x, map_index_y, occ_grid_in_global_x, occ_grid_in_global_y);
-                double z_distance_square = std::pow(point_in_map_tf_msg.transform.translation.x-occ_grid_in_global_x, 2) + std::pow(point_in_map_tf_msg.transform.translation.y-occ_grid_in_global_y, 2);
-                gaussianProbability(z_distance_square, param_sigma_hit_, p_hit);
-                if (sqrt(z_distance_square) > distance_tol) {
+                double z_distance = std::sqrt(std::pow(point_in_map_tf_msg.transform.translation.x-occ_grid_in_global_x, 2) + std::pow(point_in_map_tf_msg.transform.translation.y-occ_grid_in_global_y, 2));
+                gaussianProbability(z_distance, param_sigma_hit_, p_hit);
+                if (z_distance > distance_tol) {
                     p_hit = -2.0; // reduce probability due to laser do not match grid map well
                 }
             } else {
@@ -267,7 +270,7 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
 }
 
 void APMCLocalizationROS::gaussianProbability(const double& z, const double& sigma, double& output_p_hit) {
-    output_p_hit = (1.0 / (std::sqrt(2.0 * M_PI) * sigma)) * std::exp(-0.5 * std::pow((z) / sigma, 2));
+    output_p_hit = (1.0 / (std::sqrt(2.0 * M_PI) * sigma)) * std::exp(-0.5 * std::pow(z / sigma, 2));
 }
 
 void APMCLocalizationROS::randomProbability(const double& z_rand, double& output_p_rand) {
@@ -282,8 +285,14 @@ void APMCLocalizationROS::handleLocalization() {
         max_weight_particle_.theta = 0.0;
         max_weight_particle_.weight = 0.0;
         //ros::Time start_time = ros::Time::now();
-        uniformGenerateSample();
-        //ROS_WARN("Time execution of uniformGenerateSample() : %f seconds", (ros::Time::now() - start_time).toSec());
+        generateSamples(param_sample_linear_size_, param_sample_angular_size_, param_sample_linear_resolution_, param_sample_angular_resolution_, initial_particle_pose_cov_); // around robot's position
+        geometry_msgs::PoseWithCovarianceStamped resample_pose_cov;
+        resample_pose_cov.pose.pose.position.x = max_weight_particle_.x;
+        resample_pose_cov.pose.pose.position.y = max_weight_particle_.y;
+        resample_pose_cov.pose.pose.position.z = 0.0;
+        resample_pose_cov.pose.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), max_weight_particle_.theta));
+        generateSamples(param_resample_linear_size_, param_resample_angular_size_, param_resample_linear_resolution_, param_resample_angular_resolution_, resample_pose_cov); // very near robot's position
+        //ROS_WARN("Time execution of generateSamples() : %f seconds", (ros::Time::now() - start_time).toSec());
         if (found_particle_){
             //ROS_INFO("\033[1;32m Successfully found best particle to localize : weight = %f \033[0m", max_weight_particle_.weight);
             preparePublisher(max_weight_particle_);
@@ -311,12 +320,9 @@ void APMCLocalizationROS::updateLocalization()
                     std::abs(delta_yaw) > param_angular_update_) 
         {
             found_particle_ = false;
-            //ros::Time start_time = ros::Time::now();
             handleLocalization();
-            //ros::Time end_time = ros::Time::now();
-            //ROS_INFO("Time execution of localization : %f seconds", (end_time - start_time).toSec());
             last_robot_pose_ = odom_msg_.pose.pose;
-            //ROS_WARN("Time execution of localization : %f seconds", (ros::Time::now() - start_time).toSec());
+            ROS_WARN("Time execution of localization : %f seconds", (ros::Time::now() - start_time).toSec());
         }
         rate.sleep();
     }

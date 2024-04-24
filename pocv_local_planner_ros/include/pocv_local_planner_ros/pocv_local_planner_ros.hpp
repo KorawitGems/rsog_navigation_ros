@@ -60,8 +60,9 @@ struct Cost {
 
 enum State {
     WAIT_FOR_GOAL,
-    Heading_To_Goal,
     ACHIEVE_GOAL,
+    Heading_To_Goal,
+    CHECK_GOAL_POSITION,
     NEAR_GOAL,
     ACHIEVE_GLOBAL_POINT,
     TIME_UP_GLOBAL_POINT,
@@ -112,6 +113,7 @@ private:
     tf2::Quaternion q_local_point_, q_global_point_;
     ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_, last_time_global_point_in_obs_, last_time_skip_global_point_;
     bool receive_laser_msg_, receive_map_msg_, receive_odom_msg_, receive_path_map_, is_initial_, use_path_cost_, use_heading_to_local_point_, wait_heading_to_local_point_;
+    bool use_temp_variable_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     int index_path_radius_, index_laser_radius_, index_robot_radius_, index_local_planner_;
     double time_step_, sim_time_step_, linear_resolution_, angular_resolution_, base_yaw_, global_point_yaw_, last_base_yaw_;
@@ -120,8 +122,9 @@ private:
     double vel_obstacle_weight_, vel_goal_weight_, vel_path_weight_;
     double inflated_path_radius_, inflated_path_weight_, inflated_laser_radius_, inflated_laser_weight_, inflated_robot_radius_, inflated_robot_weight_, inflated_local_planner_;
     double planner_goal_weight_, planner_move_weight_;
-    double delta_yaw_from_current_base_, global_point_tolerance_, goal_tolerance_;
-    double temp_sim_time_step_, cmd_ang_vz_, temp_min_angular_velocity_, temp_max_angular_velocity_;
+    double delta_yaw_from_current_base_, global_point_tolerance_, goal_position_tolerance_, goal_orientation_tolerance_;
+    double temp_vel_path_weight_, temp_vel_goal_weight_, temp_global_point_tolerance_;
+    double cmd_ang_vz_, temp_min_angular_velocity_, temp_max_angular_velocity_;
     AOGMCommonMap common_map_;
     AOGMPlannerROS planner_;
     Cost last_best_cost_;

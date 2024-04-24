@@ -32,6 +32,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
 {
     // Initialize ROS parameters
+    pnh_.param<double>("goal_position_tolerance", goal_position_tolerance_, 0.05);
+    pnh_.param<double>("goal_orientation_tolerance", goal_orientation_tolerance_, 0.02);
     pnh_.param<double>("min_linear_velocity", min_linear_velocity_, -0.2);
     pnh_.param<double>("max_linear_velocity", max_linear_velocity_, 0.2);
     pnh_.param<double>("min_angular_velocity", min_angular_velocity_, -0.5);
@@ -41,9 +43,8 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     pnh_.param<double>("linear_vel_resolution", linear_resolution_, 0.01);
     pnh_.param<double>("sim_vel/sim_time_step", sim_time_step_, 0.1);
     pnh_.param<double>("sim_vel/obstacle_cost/weight", vel_obstacle_weight_, 5.0);
-    pnh_.param<double>("sim_vel/goal_cost/weight", vel_goal_weight_, 1.0);
+    pnh_.param<double>("sim_vel/goal_cost/weight", vel_goal_weight_, 100.0);
     pnh_.param<double>("sim_vel/path_cost/weight", vel_path_weight_, 5.0);
-    pnh_.param<double>("goal_tolerance", goal_tolerance_, 0.1);
     pnh_.param<bool>("wait_heading_to_local_point", wait_heading_to_local_point_, true);
     pnh_.param<std::string>("map_frame", param_map_frame_, "map");
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
@@ -79,6 +80,7 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     is_initial_ = false;
     use_path_cost_ = true;
     use_heading_to_local_point_ = true;
+    use_temp_variable_ = false;
     state_ = WAIT_FOR_GOAL;
     last_cmd_vel_.linear.x = 0.0;
     last_cmd_vel_.linear.y = 0.0;
@@ -86,7 +88,6 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     cmd_ang_vz_ = 0.0;
     last_best_cost_.obstacle = 0.0;
     global_point_tolerance_ = 0.3;
-    temp_sim_time_step_ = -0.1;
     last_time_intersect_ = ros::Time::now();
     last_time_achieve_goal_ = ros::Time::now();
     last_time_global_point_in_obs_ = ros::Time::now();
@@ -94,14 +95,14 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
 }
 
 void POCVLocalPlannerROS::mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& msg) { 
-    if (receive_map_msg_){
+    if (receive_map_msg_) {
         return;
     }
     common_map_.map_msg_ = *msg;
     index_laser_radius_ = static_cast<int>(std::floor(inflated_laser_radius_ / common_map_.map_msg_.info.resolution));
     index_robot_radius_ = static_cast<int>(std::floor(inflated_robot_radius_ / common_map_.map_msg_.info.resolution));
     index_path_radius_ = static_cast<int>(std::floor(inflated_path_radius_ / common_map_.map_msg_.info.resolution));
-    inflated_local_planner_ = inflated_robot_radius_ - 3*common_map_.map_msg_.info.resolution;
+    inflated_local_planner_ = inflated_robot_radius_ - 2*common_map_.map_msg_.info.resolution;
     index_local_planner_ = static_cast<int>(std::floor(inflated_local_planner_ / common_map_.map_msg_.info.resolution));
     
     int size_map = common_map_.map_msg_.info.width * common_map_.map_msg_.info.height;
@@ -174,7 +175,7 @@ void POCVLocalPlannerROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& 
                                 local_map_[x + y * common_map_.map_msg_.info.width] = 100;
                             }
                             if (distance < inflated_laser_radius_) {
-                                double decayed_cost = inflated_laser_weight_*std::pow(1.0 - (distance / inflated_laser_radius_),2); 
+                                double decayed_cost = inflated_laser_weight_*std::pow(1.0 - (distance / inflated_laser_radius_), 3); 
                                 //ROS_WARN("decayed_cost inflated_laser = %f", decayed_cost);
                                 laser_map_[x + y * common_map_.map_msg_.info.width] = std::max(decayed_cost, laser_map_[x + y * common_map_.map_msg_.info.width]);
                                 //ROS_WARN("laser_map_ inflated_laser value = %f", laser_map_[x + y * common_map_.map_msg_.info.width]);
@@ -202,16 +203,17 @@ void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg
     start_current.pose.position.y = base_in_map_tf_msg_.transform.translation.y;
     global_path_.poses.clear();
     global_path_.poses.emplace_back(start_current);
-    for (int i = 0; i < msg->poses.size(); i++){
+    for (int i = 0; i < msg->poses.size(); i++) {
         if (std::sqrt(std::pow(msg->poses[i].pose.position.x - global_path_.poses[global_path_.poses.size()-1].pose.position.x, 2) + 
                 std::pow(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y, 2)) > 2.0){
             // double delta_yaw = std::atan2(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y,
             //                             msg->poses[i].pose.position.x - global_path_.poses[global_path_.poses.size()-1].pose.position.x);
             global_path_.poses.emplace_back(msg->poses[i]);
+            global_path_.poses.emplace_back(msg->poses[i]); // add to prevent time up reach global point
             // tf2::convert(tf2::Quaternion(tf2::Vector3(0, 0, 1), delta_yaw), global_path_.poses[global_path_.poses.size()-1].pose.orientation);
         }
     }
-    for (int i = 0; i <= 3; i++) {
+    for (int i = 0; i <= 5; i++) {
         global_path_.poses.emplace_back(goal_); // collect goal in last place and more to avoid time up to reach goal
     }
     last_global_point_ = global_path_.poses[0];
@@ -227,7 +229,7 @@ bool POCVLocalPlannerROS::createPathMap() {
         if (ros::Time::now() - last_time_global_point_in_obs_ > ros::Duration(1.0)) {
             common_map_.positionToMapIndex(global_path_.poses[0].pose.position.x, global_path_.poses[0].pose.position.y, map_index_x, map_index_y);
             if (local_map_[map_index_x + map_index_y * common_map_.map_msg_.info.width] == 100) {
-                ROS_WARN("Global point is in obstacle, skip global point");
+                //ROS_WARN("Global point is in obstacle, skip global point");
                 global_path_.poses.erase(global_path_.poses.begin());
                 last_time_global_point_in_obs_ = ros::Time::now();
                 return false;
@@ -256,7 +258,7 @@ bool POCVLocalPlannerROS::createPathMap() {
     }
     if (!found_path) {
         if (ros::Time::now() - last_time_skip_global_point_ > ros::Duration(1.0) ) {
-            ROS_WARN("No valid local path found, skip global point");
+            //ROS_WARN("No valid local path found, skip global point");
             global_path_.poses.erase(global_path_.poses.begin());
             last_time_skip_global_point_ = ros::Time::now();
         }
@@ -295,15 +297,14 @@ bool POCVLocalPlannerROS::createPathMap() {
                         double distance = std::abs(index_distance) * common_map_.map_msg_.info.resolution;
                         if (std::abs(dx) <= index_robot_radius_ && std::abs(dy) <= index_robot_radius_ ){
                             if (distance < inflated_robot_radius_) {
-                                //double rised_cost = -(std::pow(i,2)/20)*inflated_path_weight_*(1.0-(distance / inflated_path_radius_));
-                                double rised_cost = -(std::pow(i,1.5)/5)*inflated_path_weight_*std::pow(1.0-(distance / inflated_path_radius_),2);
+                                double rised_cost = -(std::pow(i,2)/50)*inflated_path_weight_*std::pow(1.0-(distance / inflated_path_radius_), 3);
                                 //ROS_WARN("rised_cost robot_radius = %f", rised_cost);
                                 path_map_[x + y * common_map_.map_msg_.info.width] = std::min(rised_cost, path_map_[x + y * common_map_.map_msg_.info.width]); // minus is inverse 1-(dis/total)
                                 //ROS_WARN("path_map_ robot_radius value = %f", path_map_[x + y * common_map_.map_msg_.info.width]);
                             }
                         } else {
                             if (distance < inflated_path_radius_) {
-                                double rised_cost = -inflated_path_weight_*std::pow(1.0-(distance / inflated_path_radius_),2);
+                                double rised_cost = -inflated_path_weight_*std::pow(1.0-(distance / inflated_path_radius_), 3);
                                 //ROS_WARN("rised_cost = %f", rised_cost);
                                 path_map_[x + y * common_map_.map_msg_.info.width] = std::min(rised_cost, path_map_[x + y * common_map_.map_msg_.info.width]); // minus is inverse 1-(dis/total)
                                 //ROS_WARN("path_map_ value = %f", path_map_[x + y * common_map_.map_msg_.info.width]);
@@ -479,13 +480,32 @@ void POCVLocalPlannerROS::updatePlanner() {
         if (time_step_ < 1.0/frequency) {
             time_step_ = 1.0/frequency;
         }
-        tf2::Quaternion delta_q, inv_q_base_in_map, q_goal; 
+        tf2::Quaternion delta_q, inv_q_base_in_map, q_goal;
+        double delta_goal_distance = std::sqrt(std::pow(goal_.pose.position.x - base_in_map_tf_msg_.transform.translation.x, 2) +
+                                        std::pow(goal_.pose.position.y - base_in_map_tf_msg_.transform.translation.y, 2));
         switch (state_) {
             case WAIT_FOR_GOAL:
                 if (ros::Time::now() - last_time_achieve_goal_ > ros::Duration(10.0)) {
                     ROS_INFO("Waiting for goal ...");
                     last_time_achieve_goal_ = ros::Time::now();
                     // change state from callback global path msg
+                }
+                break;
+
+            case ACHIEVE_GOAL:
+                if (delta_goal_distance < goal_position_tolerance_) {
+                    ROS_INFO("\033[1;32m Achieve goal's position and orientation \033[0m");
+                    use_path_cost_ = true;
+                    global_point_tolerance_ = temp_global_point_tolerance_; // reset param
+                    vel_goal_weight_ = temp_vel_goal_weight_;
+                    use_temp_variable_ = false;
+                    use_heading_to_local_point_ = true;
+                    last_time_achieve_goal_ = ros::Time::now() - ros::Duration(7.0);
+                    state_ = WAIT_FOR_GOAL;
+                } else {
+                    global_path_.poses.emplace_back(goal_); // move to goal's position 
+                    global_path_.poses.emplace_back(goal_); // prevent time up
+                    state_ = CHECK_GOAL_POSITION;
                 }
                 break;
 
@@ -496,22 +516,22 @@ void POCVLocalPlannerROS::updatePlanner() {
                 delta_q = q_goal*inv_q_base_in_map;
                 delta_q.normalize();
                 delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
-                if (std::abs(delta_yaw_from_current_base_) > 0.05) {
+                if (std::abs(delta_yaw_from_current_base_) > goal_orientation_tolerance_) {
                     findAngularCmdVel(predict_cmd_vel_);
                     cmd_vel_pub_.publish(predict_cmd_vel_);
+                    state_ = Heading_To_Goal;
                 } else {
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
-                    ROS_INFO("\033[1;32m Successfully rotate heading to goal \033[0m");
-                    state_ = WAIT_FOR_GOAL;
+                    ROS_WARN("Orientation's error: %f rad", delta_yaw_from_current_base_);
+                    state_ = ACHIEVE_GOAL;
                 }
                 break;
 
-            case ACHIEVE_GOAL:
-                state_ = NEAR_GOAL ;
+            case CHECK_GOAL_POSITION:
+                state_ = NEAR_GOAL;
                 if (!global_path_.poses.empty()) {
-                    if (std::abs(goal_.pose.position.x - base_in_map_tf_msg_.transform.translation.x) < goal_tolerance_ &&
-                            std::abs(goal_.pose.position.y - base_in_map_tf_msg_.transform.translation.y) < goal_tolerance_) {
-                        ROS_INFO("\033[1;32m Achieve goal \033[0m");
+                    if (delta_goal_distance < goal_position_tolerance_) {
+                        ROS_WARN("Position's error: %f m", delta_goal_distance);
                         cmd_vel_pub_.publish(geometry_msgs::Twist());
                         while (!global_path_.poses.empty()){
                             global_path_.poses.erase(global_path_.poses.begin()); // delete repeat goal that is same goal to avoid time up reach goal
@@ -519,27 +539,24 @@ void POCVLocalPlannerROS::updatePlanner() {
                         global_path_.poses.clear();
                         local_path_.poses.clear();
                         state_ = Heading_To_Goal;
-                        use_path_cost_ = true;
-                        // sim_time_step_ = temp_sim_time_step_; // reset param
-                        // temp_sim_time_step_ = -0.1;
-                        use_heading_to_local_point_ = true;
-                        last_time_achieve_goal_ = ros::Time::now() - ros::Duration(7.0);
                     }
                 }
                 break;
 
             case NEAR_GOAL:
                 state_ = ACHIEVE_GLOBAL_POINT;
-                if (std::abs(goal_.pose.position.x - base_in_map_tf_msg_.transform.translation.x) < 0.5 &&
-                        std::abs(goal_.pose.position.y - base_in_map_tf_msg_.transform.translation.y) < 0.5) {
+                if (delta_goal_distance < 0.5) {
                     //ROS_INFO("\033[1;35m Near goal \033[0m");
                     state_ = TIME_UP_GLOBAL_POINT;
                     use_path_cost_ = false;
                     use_heading_to_local_point_ = false;
-                    // if (temp_sim_time_step_ < 0.0) {
-                    //     temp_sim_time_step_ = sim_time_step_; 
-                    // }
-                    // sim_time_step_ = 0.5; // adjust param
+                    if (!use_temp_variable_) {
+                        temp_global_point_tolerance_ = global_point_tolerance_;
+                        temp_vel_goal_weight_ = vel_goal_weight_;
+                        use_temp_variable_ = true;
+                        global_point_tolerance_ = goal_position_tolerance_; // adjust param
+                        vel_goal_weight_ = vel_goal_weight_*50;
+                    }
                     break;
                 }
 
@@ -561,8 +578,8 @@ void POCVLocalPlannerROS::updatePlanner() {
             case TIME_UP_GLOBAL_POINT:
                 state_ = PATH_INTERSECT_OBSTACLE;
                 if (!global_path_.poses.empty()) {
-                    if (ros::Time::now() - last_time_local_goal_ > ros::Duration(20.0)){
-                        ROS_WARN("Time up to reach global point");
+                    if (ros::Time::now() - last_time_local_goal_ > ros::Duration(10.0)){
+                        //ROS_WARN("Time up to reach global point");
                         cmd_vel_pub_.publish(geometry_msgs::Twist());
                         global_path_.poses.erase(global_path_.poses.begin()); // // time out to achieve local goal, then skip local goal
                         receive_path_map_ = false;
@@ -586,15 +603,8 @@ void POCVLocalPlannerROS::updatePlanner() {
                     delta_q.normalize();
                     delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
                     if (std::abs(delta_yaw_from_current_base_) > 0.1){
-                        temp_min_angular_velocity_ = min_angular_velocity_;
-                        temp_max_angular_velocity_ = max_angular_velocity_;
-                        min_angular_velocity_ = -1.0;
-                        max_angular_velocity_ = 1.0;
                         findAngularCmdVel(predict_cmd_vel_);
                         cmd_vel_pub_.publish(predict_cmd_vel_);
-                        min_angular_velocity_ = temp_min_angular_velocity_;
-                        max_angular_velocity_ = temp_max_angular_velocity_;
-                        //cmd_ang_vz_ = predict_cmd_vel_.angular.z;
                         state_ = Heading_To_GLOBAL_POINT;
                     }
                 }
@@ -603,7 +613,7 @@ void POCVLocalPlannerROS::updatePlanner() {
             case PLAN_PATH:
                 state_ = PATH_INTERSECT_OBSTACLE;
                 if (!global_path_.poses.empty()) {
-                    ROS_INFO("Plan local path");
+                    //ROS_INFO("Plan local path");
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
                     receive_path_map_ = createPathMap();
                     if (!receive_path_map_) {
@@ -617,7 +627,7 @@ void POCVLocalPlannerROS::updatePlanner() {
             case PATH_INTERSECT_OBSTACLE:
                 state_ = Heading_To_LOCAL_POINT;
                 if (doPathIntersectObstacle() && ros::Time::now() - last_time_intersect_ > ros::Duration(1.0)){
-                    ROS_WARN("Path intersect the obstacle");
+                    //ROS_WARN("Path intersect the obstacle");
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
                     state_ = PLAN_PATH;
                     receive_path_map_ = false;
@@ -658,7 +668,7 @@ void POCVLocalPlannerROS::updatePlanner() {
                 break;  
 
             case SIMULATE_VELOCITY:
-                state_ = ACHIEVE_GOAL;
+                state_ = CHECK_GOAL_POSITION;
                 if (!receive_path_map_) {
                     state_ = PLAN_PATH;
                 } else {
