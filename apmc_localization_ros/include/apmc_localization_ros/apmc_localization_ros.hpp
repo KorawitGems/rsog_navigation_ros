@@ -83,21 +83,21 @@ private:
     
     ros::NodeHandle nh_, pnh_;
     ros::Subscriber map_sub_, laser_sub_, odom_sub_, initial_pose_sub_;
-    ros::Publisher estimate_pose_pub_, odom_in_map_pub_;
+    ros::Publisher apmc_pose_pub_, odom_in_map_pub_;
     ros::Timer loop_pub_timer_;
     sensor_msgs::LaserScan laser_msg_;
     nav_msgs::Odometry odom_msg_, current_odom_msg_;
-    geometry_msgs::PoseWithCovarianceStamped initial_particle_pose_cov_;
+    geometry_msgs::PoseWithCovarianceStamped initial_particle_pose_cov_, particle_in_map_msg_;
     geometry_msgs::Pose last_robot_pose_;
-    geometry_msgs::TransformStamped odom_in_map_tf_msg_, laser_in_base_tf_msg_, particle_in_map_tf_msg_;
+    geometry_msgs::TransformStamped odom_in_map_tf_msg_, laser_in_base_tf_msg_;
     std::vector<int> grid_map_;
     Particle max_weight_particle_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
-    bool receive_map_msg_, receive_laser_msg_, receive_odom_msg_, is_initial_, found_particle_;
+    bool publish_tf_, receive_map_msg_, receive_laser_msg_, receive_odom_msg_, is_initial_, found_particle_;
     double param_hit_weight_, param_rand_weight_, param_sigma_hit_, param_linear_update_, param_angular_update_, total_weight_, inflated_occupied_radius_;
     double param_sample_linear_resolution_, param_sample_linear_size_, param_sample_angular_size_, param_sample_angular_resolution_;
     double param_resample_linear_resolution_, param_resample_linear_size_, param_resample_angular_size_, param_resample_angular_resolution_;
-    double p_rand_;
+    double p_rand_, z_distance_tol_;
     int param_laser_step_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;

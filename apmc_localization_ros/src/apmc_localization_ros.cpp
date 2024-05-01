@@ -29,11 +29,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 #include <apmc_localization_ros/apmc_localization_ros.hpp>
 
-APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~"), initial_particle_pose_cov_() 
+APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
 {
     pnh_.param<std::string>("map_frame", param_map_frame_, "map");
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", param_base_frame_, "base_footprint");
+    pnh_.param<bool>("publish_tf", publish_tf_, true);
     pnh_.param<double>("linear_update", param_linear_update_, 2.0);
     pnh_.param<double>("angular_update", param_angular_update_, 2.0);
     pnh_.param<double>("sample_linear_resolution", param_sample_linear_resolution_, 0.05);
@@ -59,9 +60,9 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
     odom_sub_ = nh_.subscribe("/odom", 1, &APMCLocalizationROS::odomCallback, this);
     initial_pose_sub_ = nh_.subscribe("/initialpose", 1, &APMCLocalizationROS::initialPoseCallback, this);
     
-    estimate_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/estimated_pose", 1);
+    apmc_pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("/apmc_pose", 1);
     odom_in_map_pub_ = nh_.advertise<geometry_msgs::TransformStamped>("/odom_in_map", 1);
-    loop_pub_timer_ = nh_.createTimer(ros::Duration(0.02), &APMCLocalizationROS::publishTfTimer, this);
+    loop_pub_timer_ = nh_.createTimer(ros::Duration(0.01), &APMCLocalizationROS::publishTfTimer, this);
 }
 
 APMCLocalizationROS::~APMCLocalizationROS(){}
@@ -72,24 +73,17 @@ void APMCLocalizationROS::initializeNode() {
         ros::spinOnce();
         r.sleep();
     }
+    particle_in_map_msg_.header.frame_id = param_map_frame_;
+
+    current_odom_msg_.pose.pose.orientation.w = 1.0;
     last_robot_pose_ = current_odom_msg_.pose.pose;
+
     odom_in_map_tf_msg_.header.frame_id = param_map_frame_;
     odom_in_map_tf_msg_.child_frame_id = param_odom_frame_;
-    odom_in_map_tf_msg_.transform.translation.x = 0.0;
-    odom_in_map_tf_msg_.transform.translation.y = 0.0;
-    odom_in_map_tf_msg_.transform.translation.z = 0.0;
-    odom_in_map_tf_msg_.transform.rotation.x = 0.0;
-    odom_in_map_tf_msg_.transform.rotation.y = 0.0;
-    odom_in_map_tf_msg_.transform.rotation.z = 0.0;
     odom_in_map_tf_msg_.transform.rotation.w = 1.0;
     odom_in_map_tf_msg_.header.stamp = ros::Time::now();
     
-    tf2::Transform odom_in_map_tf2;
-    tf2::convert(odom_in_map_tf_msg_.transform, odom_in_map_tf2); // convert can not use stamped
-    initial_particle_pose_cov_.pose.pose.position.x = odom_in_map_tf_msg_.transform.translation.x;
-    initial_particle_pose_cov_.pose.pose.position.y = odom_in_map_tf_msg_.transform.translation.y;
-    initial_particle_pose_cov_.pose.pose.position.z = odom_in_map_tf_msg_.transform.translation.z;
-    initial_particle_pose_cov_.pose.pose.orientation = tf2::toMsg(odom_in_map_tf2.getRotation());
+    initial_particle_pose_cov_.pose.pose.orientation.w = 1.0;
     initial_particle_pose_cov_.header.stamp = ros::Time::now();
     initial_particle_pose_cov_.header.frame_id = param_map_frame_;
 
@@ -152,7 +146,6 @@ void APMCLocalizationROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& 
             geometry_msgs::TransformStamped point_in_laser_tf_msg;
             point_in_laser_tf_msg.transform.translation.x = laser_msg_.ranges[i] * std::cos(angle);
             point_in_laser_tf_msg.transform.translation.y = laser_msg_.ranges[i] * std::sin(angle);
-            point_in_laser_tf_msg.transform.translation.z = 0.0;
             point_in_laser_tf_msg.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), 0.0));
             tf2::Transform point_in_laser_tf2, laser_in_base_tf2;
             tf2::convert(point_in_laser_tf_msg.transform, point_in_laser_tf2); 
@@ -167,12 +160,12 @@ void APMCLocalizationROS::laserCallback(const sensor_msgs::LaserScan::ConstPtr& 
         tf2::Transform odom_in_map_tf2;
         tf2::convert(odom_in_map_tf_msg_.transform, odom_in_map_tf2); // convert can not use stamped
         tf2::Transform base_in_map_tf2 = odom_in_map_tf2 * base_in_odom_tf2;
-        geometry_msgs::TransformStamped base_in_map_tf_msg;
-        base_in_map_tf_msg.transform = tf2::toMsg(base_in_map_tf2);
-        initial_particle_pose_cov_.pose.pose.position.x = base_in_map_tf_msg.transform.translation.x;
-        initial_particle_pose_cov_.pose.pose.position.y = base_in_map_tf_msg.transform.translation.y;
-        initial_particle_pose_cov_.pose.pose.position.z = base_in_map_tf_msg.transform.translation.z;
-        initial_particle_pose_cov_.pose.pose.orientation = base_in_map_tf_msg.transform.rotation;
+        initial_particle_pose_cov_.pose.pose.position.x = base_in_map_tf2.getOrigin().x();
+        initial_particle_pose_cov_.pose.pose.position.y = base_in_map_tf2.getOrigin().y();
+        initial_particle_pose_cov_.pose.pose.orientation.x = base_in_map_tf2.getRotation().x();
+        initial_particle_pose_cov_.pose.pose.orientation.y = base_in_map_tf2.getRotation().y();
+        initial_particle_pose_cov_.pose.pose.orientation.z = base_in_map_tf2.getRotation().z();
+        initial_particle_pose_cov_.pose.pose.orientation.w = base_in_map_tf2.getRotation().w();
     }
     receive_laser_msg_ = true;
 }
@@ -229,32 +222,27 @@ void APMCLocalizationROS::calculateLikelihoodField(Particle& particle)
     double p_hit = 0.0;
     tf2::Quaternion q;
     particle.weight = 0.0;
-    double distance_tol = 0.6*common_map_.map_msg_.info.resolution;
     for (const auto &point_in_base : point_in_base_vector_) {
-        geometry_msgs::TransformStamped particle_in_map_tf_msg_;
-        particle_in_map_tf_msg_.transform.translation.x = particle.x;
-        particle_in_map_tf_msg_.transform.translation.y = particle.y;
-        particle_in_map_tf_msg_.transform.translation.z = 0.0;
-        particle_in_map_tf_msg_.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), particle.theta));
+        particle_in_map_msg_.pose.pose.position.x = particle.x;
+        particle_in_map_msg_.pose.pose.position.y = particle.y;
+        particle_in_map_msg_.pose.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), particle.theta));
         
         tf2::Transform particle_in_map_tf2;
-        tf2::convert(particle_in_map_tf_msg_.transform, particle_in_map_tf2);
+        tf2::convert(particle_in_map_msg_.pose.pose, particle_in_map_tf2);
         tf2::Transform point_in_map_tf2 = particle_in_map_tf2 * point_in_base;
-        geometry_msgs::TransformStamped point_in_map_tf_msg;
-        point_in_map_tf_msg.transform = tf2::toMsg(point_in_map_tf2);
         int map_index_x, map_index_y;
-        common_map_.positionToMapIndex(point_in_map_tf_msg.transform.translation.x, point_in_map_tf_msg.transform.translation.y, map_index_x, map_index_y);
+        common_map_.positionToMapIndex(point_in_map_tf2.getOrigin().x(), point_in_map_tf2.getOrigin().y(), map_index_x, map_index_y);
         if (common_map_.isInMap(map_index_x, map_index_y)) {
             if (grid_map_[map_index_x + map_index_y* common_map_.map_msg_.info.width] == 100) {
                 double occ_grid_in_global_x, occ_grid_in_global_y;
                 common_map_.mapIndexToPosition(map_index_x, map_index_y, occ_grid_in_global_x, occ_grid_in_global_y);
-                double z_distance = std::sqrt(std::pow(point_in_map_tf_msg.transform.translation.x-occ_grid_in_global_x, 2) + std::pow(point_in_map_tf_msg.transform.translation.y-occ_grid_in_global_y, 2));
+                double z_distance = std::sqrt(std::pow(point_in_map_tf2.getOrigin().x() - occ_grid_in_global_x, 2) + std::pow(point_in_map_tf2.getOrigin().y() - occ_grid_in_global_y, 2));
                 gaussianProbability(z_distance, param_sigma_hit_, p_hit);
-                if (z_distance > distance_tol) {
-                    p_hit = -2.0; // reduce probability due to laser do not match grid map well
+                if (z_distance > z_distance_tol_) {
+                    p_hit = -1.0; // reduce probability due to laser do not match grid map well
                 }
             } else {
-                p_hit = -2.0; // laser do not align occupancy grid map
+                p_hit = -3.0; // laser do not align occupancy grid map
             }
         } else {
             particle.weight = -1.0; // reject due to laser out of map
@@ -285,12 +273,13 @@ void APMCLocalizationROS::handleLocalization() {
         max_weight_particle_.theta = 0.0;
         max_weight_particle_.weight = 0.0;
         //ros::Time start_time = ros::Time::now();
+        z_distance_tol_ = 0.8*common_map_.map_msg_.info.resolution;
         generateSamples(param_sample_linear_size_, param_sample_angular_size_, param_sample_linear_resolution_, param_sample_angular_resolution_, initial_particle_pose_cov_); // around robot's position
         geometry_msgs::PoseWithCovarianceStamped resample_pose_cov;
         resample_pose_cov.pose.pose.position.x = max_weight_particle_.x;
         resample_pose_cov.pose.pose.position.y = max_weight_particle_.y;
-        resample_pose_cov.pose.pose.position.z = 0.0;
         resample_pose_cov.pose.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), max_weight_particle_.theta));
+        z_distance_tol_ = param_resample_linear_resolution_;
         generateSamples(param_resample_linear_size_, param_resample_angular_size_, param_resample_linear_resolution_, param_resample_angular_resolution_, resample_pose_cov); // very near robot's position
         //ROS_WARN("Time execution of generateSamples() : %f seconds", (ros::Time::now() - start_time).toSec());
         if (found_particle_){
@@ -302,7 +291,7 @@ void APMCLocalizationROS::handleLocalization() {
 
 void APMCLocalizationROS::updateLocalization()
 {
-    ros::Rate rate(50);
+    ros::Rate rate(100);
     while (ros::ok()) 
     {
         ros::Time start_time = ros::Time::now();
@@ -329,34 +318,27 @@ void APMCLocalizationROS::updateLocalization()
 }
 
 void APMCLocalizationROS::preparePublisher(const Particle& particle) {
-    tf2::Transform base_in_odom_tf2, odom_in_base_tf2;
-    tf2::convert(current_odom_msg_.pose.pose, base_in_odom_tf2);
-    particle_in_map_tf_msg_.transform.translation.x = particle.x;
-    particle_in_map_tf_msg_.transform.translation.y = particle.y;
-    particle_in_map_tf_msg_.transform.translation.z = 0.0;
-    particle_in_map_tf_msg_.transform.rotation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), particle.theta));
+    particle_in_map_msg_.pose.pose.position.x = particle.x;
+    particle_in_map_msg_.pose.pose.position.y = particle.y;
+    particle_in_map_msg_.pose.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), particle.theta));
+    particle_in_map_msg_.header.stamp = ros::Time::now();
+    apmc_pose_pub_.publish(particle_in_map_msg_);
+    
+    tf2::Transform base_in_odom_tf2;
+    tf2::convert(odom_msg_.pose.pose, base_in_odom_tf2);
     tf2::Transform particle_in_map_tf2;
-    tf2::convert(particle_in_map_tf_msg_.transform, particle_in_map_tf2); // convert can not use stamped
+    tf2::convert(particle_in_map_msg_.pose.pose, particle_in_map_tf2); // convert can not use stamped
     tf2::Transform odom_in_map_tf2 = particle_in_map_tf2 * base_in_odom_tf2.inverse();
     odom_in_map_tf_msg_.transform = tf2::toMsg(odom_in_map_tf2);
-    odom_in_map_tf_msg_.header.frame_id = param_map_frame_;
-    odom_in_map_tf_msg_.child_frame_id = param_odom_frame_;
-
-    geometry_msgs::PoseStamped particle_in_map_pose;
-    particle_in_map_pose.header.frame_id = param_map_frame_;
-    particle_in_map_pose.header.stamp = ros::Time::now();
-    particle_in_map_pose.pose.position.x = particle_in_map_tf_msg_.transform.translation.x;
-    particle_in_map_pose.pose.position.y = particle_in_map_tf_msg_.transform.translation.y;
-    particle_in_map_pose.pose.position.z = particle_in_map_tf_msg_.transform.translation.z;
-    particle_in_map_pose.pose.orientation = particle_in_map_tf_msg_.transform.rotation;
-    estimate_pose_pub_.publish(particle_in_map_pose);
 }
 
 void APMCLocalizationROS::publishTfTimer(const ros::TimerEvent& event)
 {
     if (is_initial_) {
         odom_in_map_tf_msg_.header.stamp = ros::Time::now();
-        tf_broadcaster_.sendTransform(odom_in_map_tf_msg_);
+        if (publish_tf_) {
+            tf_broadcaster_.sendTransform(odom_in_map_tf_msg_);
+        }
         odom_in_map_pub_.publish(odom_in_map_tf_msg_);
     }
 }
