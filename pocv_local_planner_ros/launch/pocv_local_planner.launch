@@ -16,7 +16,7 @@
     <param name="max_abs_angular_acceleration" type="double" value="2.0"/>
     <param name="linear_vel_resolution" type="double" value="0.001"/>
     <param name="sim_vel/sim_time_step" type="double" value="1.0"/>
-    <param name="sim_vel/obstacle_cost/weight" type="double" value="20.0"/>
+    <param name="sim_vel/obstacle_cost/weight" type="double" value="10.0"/>
     <param name="sim_vel/goal_cost/weight" type="double" value="1.0"/>
     <param name="sim_vel/path_cost/weight" type="double" value="10.0"/>
     <param name="wait_heading_to_local_point" type="bool" value="true"/>
@@ -29,7 +29,7 @@
     <param name="laser_map/robot_weight" type="double" value="1000.0"/>
     <param name="path_map/radius" type="double" value="1.0"/>
     <param name="path_map/weight" type="double" value="100.00"/>
-    <param name="planner/goal_cost/weight" type="double" value="10.0"/>
+    <param name="planner/goal_cost/weight" type="double" value="5.0"/>
     <param name="planner/move_cost/weight" type="double" value="10.0"/>
     <param name="debug/time_execution" type="bool" value="true"/>
     <param name="debug/simulated_variable" type="bool" value="true"/>

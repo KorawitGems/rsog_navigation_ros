@@ -57,7 +57,7 @@ bool AOGMPlannerROS::plan_path(AOGMCommonMap& common_map, const std::vector<int>
 
         double distance_to_goal = calculateDistance(current_node->map_index.x, current_node->map_index.y, 
                                                     goal_node->map_index.x, goal_node->map_index.y);
-        if (distance_to_goal < 0.1) { // goal cell is same current cell
+        if (distance_to_goal < 0.1) {
             while (current_node->parent != nullptr) {
                 common_map.mapIndexToPosition(current_node->map_index.x, current_node->map_index.y,
                                         result_pose.pose.position.x, result_pose.pose.position.y);
