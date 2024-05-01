@@ -48,8 +48,9 @@ OCGMGlobalPlannerROS::OCGMGlobalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer
     pnh_.param<double>("move_cost/weight", move_cost_weight_, 10.0);
 
     ComponentMapState_ = false;
-    timer_publisher = nh_.createTimer(ros::Duration(0.02), &OCGMGlobalPlannerROS::getRobotPositionCallback, this);
-
+    timer_current_pose_ = nh_.createTimer(ros::Duration(0.02), &OCGMGlobalPlannerROS::getRobotPositionCallback, this);
+    timer_pub_ = nh_.createTimer(ros::Duration(1.0), &OCGMGlobalPlannerROS::timerPublish, this);
+    
     occupancy_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
     robot_radius_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
     obstacle_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
@@ -74,12 +75,14 @@ void OCGMGlobalPlannerROS::map_callback(const nav_msgs::OccupancyGrid::ConstPtr&
         double robot_radius_real_position_y;
         double obstacle_real_position_x;
         double obstacle_real_position_y;
+
         for (int i = 0; i < common_map_.map_msg_.info.width; i++) {
             for (int j = 0; j < common_map_.map_msg_.info.height; j++) {
                 occupancy_map_[j * common_map_.map_msg_.info.width + i] = common_map_.map_msg_.data[j * common_map_.map_msg_.info.width + i];
                 obstacle_map_[j * common_map_.map_msg_.info.width + i] = 1.0;
             }
         }
+
         for (int i = 0; i < common_map_.map_msg_.info.width; i++) {
             for (int j = 0; j < common_map_.map_msg_.info.height; j++) {
                 if (common_map_.map_msg_.data[j * common_map_.map_msg_.info.width + i] == 100) {
@@ -102,28 +105,19 @@ void OCGMGlobalPlannerROS::map_callback(const nav_msgs::OccupancyGrid::ConstPtr&
                                     index_distance = dy;
                                 }
                                 double distance = std::abs(index_distance) * common_map_.map_msg_.info.resolution;
-                                double decayed_obstacle = inflated_obstacle_weight_ * (1 - (distance / inflated_obstacle_radius_));
-                                obstacle_map_[y * common_map_.map_msg_.info.width + x] = std::max(decayed_obstacle + 2.0, obstacle_map_[y * common_map_.map_msg_.info.width + x]);
-                                
-                                common_map_.mapIndexToPosition(x, y, obstacle_real_position_x, obstacle_real_position_y);
-                                pcl::PointXYZI obstacle_point;
-                                obstacle_point.x = obstacle_real_position_x;
-                                obstacle_point.y = obstacle_real_position_y;
-                                obstacle_point.z = 0.0;
-                                obstacle_point.intensity = 200; // debug
-                                obstacle_cloud_ptr_->points.emplace_back(obstacle_point);
-                                
                                 if (std::abs(dx) <= index_robot_radius && std::abs(dy) <= index_robot_radius) {
                                     occupancy_map_[y * common_map_.map_msg_.info.width + x] = 100;
-                                    obstacle_map_[y * common_map_.map_msg_.info.width + x] = std::max(inflated_robot_weight_, obstacle_map_[y * common_map_.map_msg_.info.width + x]);
-                                    
                                     common_map_.mapIndexToPosition(x, y, robot_radius_real_position_x, robot_radius_real_position_y);
                                     pcl::PointXYZI robot_radius_point;
                                     robot_radius_point.x = robot_radius_real_position_x;
                                     robot_radius_point.y = robot_radius_real_position_y;
                                     robot_radius_point.z = 0.0;
-                                    robot_radius_point.intensity = 150; // debug
+                                    robot_radius_point.intensity = 100; // debug
                                     robot_radius_cloud_ptr_->points.emplace_back(robot_radius_point);
+                                }
+                                if (distance < inflated_obstacle_radius_) {
+                                    double decayed_cost = inflated_obstacle_weight_*(1.0 - std::pow( distance / inflated_obstacle_radius_, 3));
+                                    obstacle_map_[y * common_map_.map_msg_.info.width + x] = std::max(decayed_cost + 2.0, obstacle_map_[y * common_map_.map_msg_.info.width + x]);
                                 }
                             }
                         }
@@ -131,27 +125,43 @@ void OCGMGlobalPlannerROS::map_callback(const nav_msgs::OccupancyGrid::ConstPtr&
                 }
             }
         }
+
+        for (int i = 0; i < common_map_.map_msg_.info.width; i++) {
+            for (int j = 0; j < common_map_.map_msg_.info.height; j++) {
+                if (occupancy_map_[j * common_map_.map_msg_.info.width + i] == 100) {
+                    common_map_.mapIndexToPosition(i, j, robot_radius_real_position_x, robot_radius_real_position_y);
+                    pcl::PointXYZI robot_radius_point;
+                    robot_radius_point.x = robot_radius_real_position_x;
+                    robot_radius_point.y = robot_radius_real_position_y;
+                    robot_radius_point.z = 0.0;
+                    robot_radius_point.intensity = 100; // debug
+                    robot_radius_cloud_ptr_->points.emplace_back(robot_radius_point);
+                }
+                pcl::PointXYZI obstacle_point;
+                obstacle_point.intensity = (obstacle_map_[j * common_map_.map_msg_.info.width + i] - 2.0)/inflated_obstacle_weight_*255; // debug
+                if (obstacle_point.intensity > 0){
+                    common_map_.mapIndexToPosition(i, j, obstacle_real_position_x, obstacle_real_position_y);
+                    obstacle_point.x = obstacle_real_position_x;
+                    obstacle_point.y = obstacle_real_position_y;
+                    obstacle_point.z = 0.0;
+                    obstacle_cloud_ptr_->points.emplace_back(obstacle_point);
+                }
+            }
+        }
+
         //ROS_WARN("OCGMGlobalPlannerROS::map_callback after Second loop");
+
         // occupancy_cloud_ptr_->is_dense = true;
-        // sensor_msgs::PointCloud2 occupancy_cloud_msg;
-        // pcl::toROSMsg(*occupancy_cloud_ptr_, occupancy_cloud_msg);
-        // occupancy_cloud_msg.header.frame_id = param_map_frame_;
-        // occupancy_cloud_msg.header.stamp = ros::Time::now();
-        // occupancy_cloud_pub_.publish(occupancy_cloud_msg);
+        // pcl::toROSMsg(*occupancy_cloud_ptr_, occupancy_cloud_msg_);
+        // occupancy_cloud_msg_.header.frame_id = param_map_frame_;
 
-        robot_radius_cloud_ptr_->is_dense = true;
-        sensor_msgs::PointCloud2 robot_radius_cloud_msg;
-        pcl::toROSMsg(*robot_radius_cloud_ptr_, robot_radius_cloud_msg);
-        robot_radius_cloud_msg.header.frame_id = param_map_frame_;
-        robot_radius_cloud_msg.header.stamp = ros::Time::now();
-        robot_radius_cloud_pub_.publish(robot_radius_cloud_msg);
+        //robot_radius_cloud_ptr_->is_dense = true;
+        pcl::toROSMsg(*robot_radius_cloud_ptr_, robot_radius_cloud_msg_);
+        robot_radius_cloud_msg_.header.frame_id = param_map_frame_;
 
-        obstacle_cloud_ptr_->is_dense = true;
-        sensor_msgs::PointCloud2 obstacle_cloud_msg;
-        pcl::toROSMsg(*obstacle_cloud_ptr_, obstacle_cloud_msg);
-        obstacle_cloud_msg.header.frame_id = param_map_frame_;
-        obstacle_cloud_msg.header.stamp = ros::Time::now();
-        obstacle_cloud_pub_.publish(obstacle_cloud_msg);
+        //obstacle_cloud_ptr_->is_dense = true;
+        pcl::toROSMsg(*obstacle_cloud_ptr_, obstacle_cloud_msg_);
+        obstacle_cloud_msg_.header.frame_id = param_map_frame_;
 
         ComponentMapState_ = true;
     }
@@ -198,6 +208,20 @@ void OCGMGlobalPlannerROS::getRobotPositionCallback(const ros::TimerEvent& event
     }
     common_map_.positionToMapIndex(base_in_map_tf_msg.transform.translation.x, base_in_map_tf_msg.transform.translation.y,
                             planner_.start_index_.x, planner_.start_index_.y);
+}
+
+void OCGMGlobalPlannerROS::timerPublish(const ros::TimerEvent& event)
+{
+    if (isComponentMapReady()) {
+        // occupancy_cloud_msg_.header.stamp = ros::Time::now();
+        // occupancy_cloud_pub_.publish(occupancy_cloud_msg_);
+
+        robot_radius_cloud_msg_.header.stamp = ros::Time::now();
+        robot_radius_cloud_pub_.publish(robot_radius_cloud_msg_);
+
+        obstacle_cloud_msg_.header.stamp = ros::Time::now();
+        obstacle_cloud_pub_.publish(obstacle_cloud_msg_);
+    }
 }
 
 void OCGMGlobalPlannerROS::publish_path(nav_msgs::Path& path_msg) {

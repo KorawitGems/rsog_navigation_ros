@@ -64,7 +64,7 @@ private:
     ros::Publisher occupancy_cloud_pub_;
     ros::Publisher robot_radius_cloud_pub_;
     ros::Publisher obstacle_cloud_pub_;
-    ros::Timer timer_publisher;
+    ros::Timer timer_current_pose_, timer_pub_;
     geometry_msgs::PoseStamped goal_;
     AOGMCommonMap common_map_;
     AOGMPlannerROS planner_;
@@ -80,14 +80,14 @@ private:
     // std::chrono::high_resolution_clock::time_point start_time_;
     // std::chrono::high_resolution_clock::time_point end_time_;
     // std::chrono::duration<double, std::milli> timeTaken_;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr occupancy_cloud_ptr_;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr robot_radius_cloud_ptr_;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr obstacle_cloud_ptr_;
+    sensor_msgs::PointCloud2 occupancy_cloud_msg_, robot_radius_cloud_msg_, obstacle_cloud_msg_;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr occupancy_cloud_ptr_, robot_radius_cloud_ptr_, obstacle_cloud_ptr_;
 
     bool isComponentMapReady();
     void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& msg);
     void goal_callback(const geometry_msgs::PoseStamped::ConstPtr& msg);
     void getRobotPositionCallback(const ros::TimerEvent& event);
+    void timerPublish(const ros::TimerEvent& event);
     void publish_path(nav_msgs::Path& path_msg);
     void publish_current_node(std::vector<geometry_msgs::PoseStamped>& current_node_pose_array);
 };
