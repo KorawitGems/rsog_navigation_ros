@@ -24,15 +24,19 @@ The localization node samples uniform particles around the robot's position to e
 | /odom            | nav_msgs/Odometry                        | Odometry for robot pose estimation.  |
 | /initialpose     | geometry_msgs/PoseWithCovarianceStamped  | Initial pose.                        |
 
-| Output Topic      | Message Type                   |Description                                     |
-|-------------------|--------------------------------|-----------------------------------------------|
-| /estimated_pose   | geometry_msgs/PoseStamped      | Estimated pose within the map frame.          |
-| /odom_in_map      | geometry_msgs/TransformStamped | Transformation between odometry and map frame.|
+| Output Topic    | Message Type                            |Description                            |
+|-----------------|-----------------------------------------|---------------------------------------|
+| /apmc_pose      | geometry_msgs/PoseWithCovarianceStamped | Estimated pose.                       |
+| /odom_in_map    | geometry_msgs/TransformStamped          | Transformation odometry in map frame. |
 
 Example
 ```bash
 roslaunch apmc_localization_ros apmc_localization.launch
 ```
+
+<p align="center">
+  <img src="image/localization_graph.png" width="640" height="360"/>
+</p>
 
 # ocgm_global_planner
 (Obstacle Cost And Grid Map Global Planner)
@@ -55,6 +59,10 @@ roslaunch ocgm_global_planner_ros ocgm_global_planner.launch
 
 <p align="center">
   <img src="image/global_path.png" width="640" height="360"/>
+</p>
+
+<p align="center">
+  <img src="image/robot_in_gazebo.png" width="640" height="360"/>
 </p>
 
 # pocv_local_planner
