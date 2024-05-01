@@ -89,7 +89,7 @@ private:
     bool findBestVelocity(geometry_msgs::Twist& output_predict_cmd_vel);
     void calculateCost(const geometry_msgs::Twist& predict_cmd_vel, const double& punitive_cost, Cost& output_cost);
     void findAngularCmdVel(geometry_msgs::Twist& predict_cmd_vel);
-    void publishSimulatedValues();
+    void publishCloud();
     void timerPublish(const ros::TimerEvent& event);
     void updatePlanner();
     void handleLookupTransform(const std::string& target_frame, const std::string& source_frame, geometry_msgs::TransformStamped& output_transform_stamped);
@@ -97,7 +97,7 @@ private:
 
     ros::NodeHandle nh_, pnh_;
     ros::Subscriber global_path_sub_, goal_sub_, map_sub_, odom_subscriber_, scan_sub_;
-    ros::Publisher cmd_vel_pub_, local_path_pub_, local_point_pub_, global_point_pub_, sim_poses_pub_, sim_vels_pub_;
+    ros::Publisher cmd_vel_pub_, local_path_pub_, local_point_pub_, global_point_pub_, sim_poses_pub_, sim_vels_pub_, robot_radius_cloud_pub_, obstacle_cloud_pub_, path_cloud_pub_;
     ros::Timer timer_pub_;
     nav_msgs::Odometry odom_msg_;
     nav_msgs::Path global_path_, local_path_, heading_local_path_;
@@ -113,7 +113,7 @@ private:
     tf2::Quaternion q_local_point_, q_global_point_;
     ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_, last_time_global_point_in_obs_, last_time_skip_global_point_;
     bool receive_laser_msg_, receive_map_msg_, receive_odom_msg_, receive_path_map_, is_initial_, use_path_cost_, use_heading_to_local_point_, wait_heading_to_local_point_;
-    bool use_temp_variable_;
+    bool use_temp_variable_, debug_time_execution_, debug_simulated_variable_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     int index_path_radius_, index_laser_radius_, index_robot_radius_, index_local_planner_;
     double time_step_, sim_time_step_, linear_resolution_, angular_resolution_, base_yaw_, global_point_yaw_, last_base_yaw_;
@@ -123,13 +123,12 @@ private:
     double inflated_path_radius_, inflated_path_weight_, inflated_laser_radius_, inflated_laser_weight_, inflated_robot_radius_, inflated_robot_weight_, inflated_local_planner_;
     double planner_goal_weight_, planner_move_weight_;
     double delta_yaw_from_current_base_, global_point_tolerance_, goal_position_tolerance_, goal_orientation_tolerance_;
-    double temp_vel_path_weight_, temp_vel_goal_weight_, temp_global_point_tolerance_;
-    double cmd_ang_vz_, temp_min_angular_velocity_, temp_max_angular_velocity_;
+    double temp_vel_goal_weight_, temp_global_point_tolerance_;
+    double cmd_ang_vz_, min_rised_cost_;
     AOGMCommonMap common_map_;
     AOGMPlannerROS planner_;
     Cost last_best_cost_;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr sim_base_cloud_ptr_;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr sim_vel_cloud_ptr_;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr sim_base_cloud_ptr_, sim_vel_cloud_ptr_, robot_radius_cloud_ptr_, obstacle_cloud_ptr_, path_cloud_ptr_;
     State state_;
 };
 

@@ -50,6 +50,7 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
     pnh_.param<double>("sigma_hit", param_sigma_hit_, 0.01);
     pnh_.param<int>("laser_step", param_laser_step_, 1);
     pnh_.param<double>("inflated_occupied_radius", inflated_occupied_radius_, 0.1);
+    pnh_.param<bool>("debug/time_execution", debug_time_execution_, false);
     receive_map_msg_ = false;
     receive_laser_msg_ = false;
     receive_odom_msg_ = false;
@@ -68,7 +69,7 @@ APMCLocalizationROS::APMCLocalizationROS() : tf_listener_(tf_buffer_), pnh_("~")
 APMCLocalizationROS::~APMCLocalizationROS(){}
 
 void APMCLocalizationROS::initializeNode() {
-    ros::Rate r(50); // wait to receive msg
+    ros::Rate r(10); // wait to receive msg
     while (!(receive_map_msg_ && receive_laser_msg_ && receive_odom_msg_)) {
         ros::spinOnce();
         r.sleep();
@@ -94,9 +95,8 @@ void APMCLocalizationROS::initializeProcess()
 {
     randomProbability(laser_msg_.range_max, p_rand_);
     handleLookupTransform(param_base_frame_, laser_msg_.header.frame_id, laser_in_base_tf_msg_);
-    handleLocalization();
-    ROS_INFO("Initialized apmc localization");
     is_initial_ = true;
+    ROS_INFO("Initialized apmc localization");
 }
 
 void APMCLocalizationROS::run()
@@ -311,7 +311,9 @@ void APMCLocalizationROS::updateLocalization()
             found_particle_ = false;
             handleLocalization();
             last_robot_pose_ = odom_msg_.pose.pose;
-            ROS_WARN("Time execution of localization : %f seconds", (ros::Time::now() - start_time).toSec());
+            if (debug_time_execution_) {
+                ROS_WARN("Time execution of localization : %f seconds", (ros::Time::now() - start_time).toSec());
+            }
         }
         rate.sleep();
     }

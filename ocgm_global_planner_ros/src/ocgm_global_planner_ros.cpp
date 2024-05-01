@@ -149,17 +149,12 @@ void OCGMGlobalPlannerROS::map_callback(const nav_msgs::OccupancyGrid::ConstPtr&
             }
         }
 
-        //ROS_WARN("OCGMGlobalPlannerROS::map_callback after Second loop");
-
-        // occupancy_cloud_ptr_->is_dense = true;
         // pcl::toROSMsg(*occupancy_cloud_ptr_, occupancy_cloud_msg_);
         // occupancy_cloud_msg_.header.frame_id = param_map_frame_;
 
-        //robot_radius_cloud_ptr_->is_dense = true;
         pcl::toROSMsg(*robot_radius_cloud_ptr_, robot_radius_cloud_msg_);
         robot_radius_cloud_msg_.header.frame_id = param_map_frame_;
 
-        //obstacle_cloud_ptr_->is_dense = true;
         pcl::toROSMsg(*obstacle_cloud_ptr_, obstacle_cloud_msg_);
         obstacle_cloud_msg_.header.frame_id = param_map_frame_;
 
@@ -241,7 +236,8 @@ void OCGMGlobalPlannerROS::publish_current_node(std::vector<geometry_msgs::PoseS
     }
 }
 
-void OCGMGlobalPlannerROS::run(){
+void OCGMGlobalPlannerROS::run() {
+    ros::Duration(1.0).sleep();
     ros::Rate rate(10);
     while (!isComponentMapReady()) {
         ros::spinOnce();

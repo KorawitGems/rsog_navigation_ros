@@ -94,6 +94,7 @@ private:
     Particle max_weight_particle_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     bool publish_tf_, receive_map_msg_, receive_laser_msg_, receive_odom_msg_, is_initial_, found_particle_;
+    bool debug_time_execution_;
     double param_hit_weight_, param_rand_weight_, param_sigma_hit_, param_linear_update_, param_angular_update_, total_weight_, inflated_occupied_radius_;
     double param_sample_linear_resolution_, param_sample_linear_size_, param_sample_angular_size_, param_sample_angular_resolution_;
     double param_resample_linear_resolution_, param_resample_linear_size_, param_resample_angular_size_, param_resample_angular_resolution_;
