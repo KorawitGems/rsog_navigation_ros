@@ -42,7 +42,10 @@ bool AOGMPlannerROS::plan_path(AOGMCommonMap& common_map, const std::vector<int>
     visited_nodes_.clear();
     node_ptr start_node = std::make_shared<Node>(start_index_);
     node_ptr goal_node = std::make_shared<Node>(goal_index_);
-
+    // start_node->move_cost = 0.0;
+    start_node->goal_cost = 0.0;
+    start_node->total_cost = start_node->goal_cost*goal_cost_weight +
+                                obstacle_map[start_node->map_index.y*common_map.map_msg_.info.width + start_node->map_index.x];
     expanded_nodes_.push(start_node);
 
     geometry_msgs::PoseStamped result_pose;
@@ -50,17 +53,17 @@ bool AOGMPlannerROS::plan_path(AOGMCommonMap& common_map, const std::vector<int>
     result_pose.pose.orientation.w = 1.0;
 
     bool found_path = false;
-    while (!expanded_nodes_.empty()) {
+    while ((!expanded_nodes_.empty())) {
         node_ptr current_node = expanded_nodes_.top();
         expanded_nodes_.pop();
         visited_nodes_.insert(current_node->map_index.y * common_map.map_msg_.info.width + current_node->map_index.x);
 
         double distance_to_goal = calculateDistance(current_node->map_index.x, current_node->map_index.y, 
-                                                    goal_node->map_index.x, goal_node->map_index.y);
+                                                        goal_node->map_index.x, goal_node->map_index.y);
         if (distance_to_goal < 0.1) {
             while (current_node->parent != nullptr) {
                 common_map.mapIndexToPosition(current_node->map_index.x, current_node->map_index.y,
-                                        result_pose.pose.position.x, result_pose.pose.position.y);
+                                                result_pose.pose.position.x, result_pose.pose.position.y);
                 output_path.poses.emplace_back(result_pose);
                 current_node = current_node->parent;
             }
@@ -68,17 +71,21 @@ bool AOGMPlannerROS::plan_path(AOGMCommonMap& common_map, const std::vector<int>
             found_path = true;
             return found_path;
         }
-
+        
+        common_map.mapIndexToPosition(current_node->map_index.x, current_node->map_index.y,
+                                        current_node->position.x, current_node->position.y);
         std::vector<node_ptr> neighbor_nodes;
         getNeighbors(common_map, occupancy_map, current_node, neighbor_nodes);
         for (auto& neighbor_node : neighbor_nodes) {
             if (visited_nodes_.find(neighbor_node->map_index.y * common_map.map_msg_.info.width + neighbor_node->map_index.x) != visited_nodes_.end())
                 continue;
+            common_map.mapIndexToPosition(neighbor_node->map_index.x, neighbor_node->map_index.y,
+                                            neighbor_node->position.x, neighbor_node->position.y);
             neighbor_node->parent = current_node;
-            neighbor_node->move_cost = current_node->move_cost + 1.0;
-            neighbor_node->goal_cost = calculateDistance(neighbor_node->map_index.x, neighbor_node->map_index.y, goal_index_.x, goal_index_.y);
-            neighbor_node->total_cost = neighbor_node->move_cost * move_cost_weight + neighbor_node->goal_cost * goal_cost_weight +
-                                        obstacle_map[neighbor_node->map_index.y * common_map.map_msg_.info.width + neighbor_node->map_index.x];
+            // neighbor_node->move_cost = current_node->move_cost + calculateDistance(neighbor_node->position.x, neighbor_node->position.y, current_node->position.x, current_node->position.y);
+            neighbor_node->goal_cost = calculateDistance(neighbor_node->map_index.x, neighbor_node->map_index.y, goal_node->map_index.x, goal_node->map_index.y);
+            neighbor_node->total_cost = neighbor_node->goal_cost*goal_cost_weight +
+                                            obstacle_map[neighbor_node->map_index.y*common_map.map_msg_.info.width + neighbor_node->map_index.x];
             expanded_nodes_.push(neighbor_node);
             visited_nodes_.insert(neighbor_node->map_index.y * common_map.map_msg_.info.width + neighbor_node->map_index.x);
         }

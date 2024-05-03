@@ -40,6 +40,7 @@ OCGMGlobalPlannerROS::OCGMGlobalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer
     pnh_.param<std::string>("map_frame", param_map_frame_, "map");
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", param_base_frame_, "base_footprint");
+    pnh_.param<double>("plan/time_up", plan_time_up_, 0.1);
     pnh_.param<double>("obstacle_map/radius", inflated_obstacle_radius_, 0.7);
     pnh_.param<double>("obstacle_map/weight", inflated_obstacle_weight_, 100.0);
     pnh_.param<double>("obstacle_map/robot_radius", inflated_robot_radius_, 0.3);
@@ -168,7 +169,7 @@ void OCGMGlobalPlannerROS::goal_callback(const geometry_msgs::PoseStamped::Const
     nav_msgs::Path result_path;
     bool found_path = false;
     ros::Time last_time_global_plan = ros::Time::now();
-    while (ros::Time::now() - last_time_global_plan < ros::Duration(1.0)) {
+    while (ros::Time::now() - last_time_global_plan < ros::Duration(plan_time_up_)) {
         ros::Time start_time = ros::Time::now();
         found_path = planner_.plan_path(common_map_, occupancy_map_, obstacle_map_, 
                                                     goal_cost_weight_, move_cost_weight_, result_path);
@@ -178,7 +179,7 @@ void OCGMGlobalPlannerROS::goal_callback(const geometry_msgs::PoseStamped::Const
             break;
         }
     }
-    if (!found_path){
+    if (!found_path) {
         ROS_WARN("No valid global path found!");
     }
     //publish_current_node(planner_.current_node_pose_array_); //debug

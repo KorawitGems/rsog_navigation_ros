@@ -73,7 +73,7 @@ private:
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     double inflated_obstacle_radius_, inflated_obstacle_weight_;
     double inflated_robot_radius_, inflated_robot_weight_;
-    double goal_cost_weight_, move_cost_weight_;
+    double goal_cost_weight_, move_cost_weight_, plan_time_up_;
     bool ComponentMapState_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;

@@ -59,17 +59,20 @@ struct Cost {
 };
 
 enum State {
+    RECOVERY_MODE,
     WAIT_FOR_GOAL,
     ACHIEVE_GOAL,
     Heading_To_Goal,
-    CHECK_GOAL_POSITION,
+    REACH_GOAL_POSITION,
+    CHECK_POSITION,
     NEAR_GOAL,
     ACHIEVE_GLOBAL_POINT,
+    CHECK_CONSTRAINT,
     TIME_UP_GLOBAL_POINT,
     Heading_To_GLOBAL_POINT,
-    Heading_To_LOCAL_POINT,
     PLAN_PATH,
     PATH_INTERSECT_OBSTACLE,
+    Heading_To_LOCAL_POINT,
     SIMULATE_VELOCITY
 };
 
@@ -88,16 +91,18 @@ private:
     bool doPathIntersectObstacle();
     bool findBestVelocity(geometry_msgs::Twist& output_predict_cmd_vel);
     void calculateCost(const geometry_msgs::Twist& predict_cmd_vel, const double& punitive_cost, Cost& output_cost);
-    void findAngularCmdVel(geometry_msgs::Twist& predict_cmd_vel);
     void publishCloud();
+    void publishSimulatedCloud();
     void timerPublish(const ros::TimerEvent& event);
+    void findAngularCmdVel(const double& delta_yaw, geometry_msgs::Twist& output_cmd_vel);
+    double findDeltaYaw(const tf2::Quaternion& q_target);
     void updatePlanner();
     void handleLookupTransform(const std::string& target_frame, const std::string& source_frame, geometry_msgs::TransformStamped& output_transform_stamped);
     void publish_path(nav_msgs::Path& path_msg);
 
     ros::NodeHandle nh_, pnh_;
     ros::Subscriber global_path_sub_, goal_sub_, map_sub_, odom_subscriber_, scan_sub_;
-    ros::Publisher cmd_vel_pub_, local_path_pub_, local_point_pub_, global_point_pub_, sim_poses_pub_, sim_vels_pub_, robot_radius_cloud_pub_, obstacle_cloud_pub_, path_cloud_pub_;
+    ros::Publisher cmd_vel_pub_, local_path_pub_, local_point_pub_, global_point_pub_, goal_pub_, sim_poses_pub_, sim_vels_pub_, robot_radius_cloud_pub_, obstacle_cloud_pub_, path_cloud_pub_;
     ros::Timer timer_pub_;
     nav_msgs::Odometry odom_msg_;
     nav_msgs::Path global_path_, local_path_, heading_local_path_;
@@ -110,19 +115,19 @@ private:
     std::vector<int> occupancy_map_, local_map_;
     tf2_ros::TransformListener tf_listener_;
     tf2_ros::Buffer tf_buffer_;
-    tf2::Quaternion q_local_point_, q_global_point_;
-    ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_, last_time_global_point_in_obs_, last_time_skip_global_point_;
-    bool receive_laser_msg_, receive_map_msg_, receive_odom_msg_, receive_path_map_, is_initial_, use_path_cost_, use_heading_to_local_point_, wait_heading_to_local_point_;
-    bool use_temp_variable_, debug_time_execution_, debug_simulated_variable_;
+    ros::Time last_time_, start_time_, last_time_local_goal_, last_time_intersect_, last_time_achieve_goal_, last_time_global_point_in_obs_, last_time_skip_global_point_, last_time_recovery_mode_;
+    bool receive_laser_msg_, receive_map_msg_, receive_odom_msg_, receive_local_path_map_, is_initial_, use_path_cost_, use_goal_cost_, use_heading_to_local_point_, wait_heading_to_local_point_;
+    bool use_temp_variable_, debug_time_execution_, debug_simulated_variable_, achieve_goal_, republish_goal_;
     std::string param_map_frame_, param_odom_frame_, param_base_frame_;
     int index_path_radius_, index_laser_radius_, index_robot_radius_, index_local_planner_;
-    double time_step_, sim_time_step_, linear_resolution_, angular_resolution_, base_yaw_, global_point_yaw_, last_base_yaw_;
+    int recovery_mode_count_;
+    double time_step_, sim_time_step_, linear_resolution_, angular_resolution_, base_yaw_, global_point_yaw_, last_base_yaw_, plan_time_up_;
     double min_linear_velocity_, max_linear_velocity_, min_angular_velocity_, max_angular_velocity_; 
     double max_abs_linear_acceleration_, max_abs_angular_acceleration_;
     double vel_obstacle_weight_, vel_goal_weight_, vel_path_weight_;
     double inflated_path_radius_, inflated_path_weight_, inflated_laser_radius_, inflated_laser_weight_, inflated_robot_radius_, inflated_robot_weight_, inflated_local_planner_;
     double planner_goal_weight_, planner_move_weight_;
-    double delta_yaw_from_current_base_, global_point_tolerance_, goal_position_tolerance_, goal_orientation_tolerance_;
+    double global_point_tolerance_, goal_position_tolerance_, goal_orientation_tolerance_;
     double temp_vel_goal_weight_, temp_global_point_tolerance_;
     double cmd_ang_vz_, min_rised_cost_;
     AOGMCommonMap common_map_;

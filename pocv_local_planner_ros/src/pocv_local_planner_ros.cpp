@@ -46,6 +46,7 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     pnh_.param<double>("sim_vel/goal_cost/weight", vel_goal_weight_, 100.0);
     pnh_.param<double>("sim_vel/path_cost/weight", vel_path_weight_, 5.0);
     pnh_.param<bool>("wait_heading_to_local_point", wait_heading_to_local_point_, true);
+    pnh_.param<double>("plan/time_up", plan_time_up_, 0.1);
     pnh_.param<std::string>("map_frame", param_map_frame_, "map");
     pnh_.param<std::string>("odom_frame", param_odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", param_base_frame_, "base_footprint");
@@ -68,6 +69,7 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
     local_path_pub_ = nh_.advertise<nav_msgs::Path>("/local_planner/path", 1);
     global_point_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/local_planner/global_point", 1);
+    goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/goal", 1);
     local_point_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/local_planner/local_point", 1);
     timer_pub_ = nh_.createTimer(ros::Duration(1.0), &POCVLocalPlannerROS::timerPublish, this);
     sim_poses_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/local_planner/simulated_pose", 1);
@@ -79,9 +81,10 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     receive_laser_msg_ = false;
     receive_map_msg_ = false;
     receive_odom_msg_ = false;
-    receive_path_map_ = false;
+    receive_local_path_map_ = false;
     is_initial_ = false;
     use_path_cost_ = true;
+    use_goal_cost_ = true;
     use_heading_to_local_point_ = true;
     use_temp_variable_ = false;
     state_ = WAIT_FOR_GOAL;
@@ -92,6 +95,8 @@ POCVLocalPlannerROS::POCVLocalPlannerROS() : pnh_("~"), tf_listener_(tf_buffer_)
     last_best_cost_.obstacle = 0.0;
     global_point_tolerance_ = 0.3;
     min_rised_cost_ = 0.0;
+    achieve_goal_ = true;
+    recovery_mode_count_ = 0;
 
     sim_base_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
     sim_vel_cloud_ptr_.reset(new pcl::PointCloud<pcl::PointXYZI>);
@@ -235,8 +240,6 @@ void POCVLocalPlannerROS::goalCallback(const geometry_msgs::PoseStamped::ConstPt
 }
 
 void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg) {
-    start_time_ = ros::Time::now();
-    last_time_ = ros::Time::now() - ros::Duration(0.05); // assume first step time to calculate velocity and cost
     // collect point every given distance along the path
     geometry_msgs::PoseStamped start_current;
     start_current.pose.position.x = base_in_map_tf_msg_.transform.translation.x;
@@ -246,11 +249,8 @@ void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg
     for (int i = 0; i < msg->poses.size(); i++) {
         if (std::sqrt(std::pow(msg->poses[i].pose.position.x - global_path_.poses[global_path_.poses.size()-1].pose.position.x, 2) + 
                 std::pow(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y, 2)) > 2.0){
-            // double delta_yaw = std::atan2(msg->poses[i].pose.position.y - global_path_.poses[global_path_.poses.size()-1].pose.position.y,
-            //                             msg->poses[i].pose.position.x - global_path_.poses[global_path_.poses.size()-1].pose.position.x);
             global_path_.poses.emplace_back(msg->poses[i]);
             global_path_.poses.emplace_back(msg->poses[i]); // add to prevent time up reach global point
-            // tf2::convert(tf2::Quaternion(tf2::Vector3(0, 0, 1), delta_yaw), global_path_.poses[global_path_.poses.size()-1].pose.orientation);
         }
     }
     for (int i = 0; i <= 5; i++) {
@@ -259,7 +259,11 @@ void POCVLocalPlannerROS::globalPathCallback(const nav_msgs::Path::ConstPtr& msg
     last_global_point_ = global_path_.poses[0];
     global_path_.poses.erase(global_path_.poses.begin());
     state_ = Heading_To_GLOBAL_POINT;
-    receive_path_map_ = false;
+    receive_local_path_map_ = false;
+    achieve_goal_ = false;
+    if (!republish_goal_) {
+        recovery_mode_count_ = 0;
+    }
     last_time_local_goal_ = ros::Time::now();
 }
 
@@ -286,7 +290,7 @@ bool POCVLocalPlannerROS::createPathMap() {
     common_map_.positionToMapIndex(base_in_map_tf_msg_.transform.translation.x, base_in_map_tf_msg_.transform.translation.y, planner_.start_index_.x, planner_.start_index_.y);
     ros::Time last_time_local_plan = ros::Time::now();
     bool found_path = false;
-    while (ros::Time::now() - last_time_local_plan < ros::Duration(1.0)) {
+    while (ros::Time::now() - last_time_local_plan < ros::Duration(plan_time_up_)) {
         ros::Time start_plan_time = ros::Time::now();
         found_path = planner_.plan_path(common_map_, local_map_, laser_map_, 
                                                     planner_goal_weight_, planner_move_weight_, local_path_);
@@ -479,14 +483,14 @@ void POCVLocalPlannerROS::calculateCost(const geometry_msgs::Twist& predict_cmd_
         output_cost.total = punitive_cost;
         valid_vel = false;
     }
-
-    if (!global_path_.poses.empty()) {
-        output_cost.goal = std::sqrt(std::pow(global_path_.poses[0].pose.position.x - predict_x, 2) + 
-                                std::pow(global_path_.poses[0].pose.position.y - predict_y, 2)) * vel_goal_weight_;
-    }
+    output_cost.goal = std::sqrt(std::pow(goal_.pose.position.x - predict_x, 2) + 
+                                    std::pow(goal_.pose.position.y - predict_y, 2)) * vel_goal_weight_;
     if (valid_vel){ 
-        output_cost.total = output_cost.obstacle + output_cost.goal;
-        if (use_path_cost_ == true) {
+        output_cost.total = output_cost.obstacle;
+        if (use_goal_cost_) {
+            output_cost.total += output_cost.goal;
+        }
+        if (use_path_cost_) {
             output_cost.total += output_cost.path;
         }
 
@@ -497,18 +501,6 @@ void POCVLocalPlannerROS::calculateCost(const geometry_msgs::Twist& predict_cmd_
         sim_base_point.intensity = std::round((output_cost.total - min_rised_cost_)/(punitive_cost - min_rised_cost_)*255); // debug
         sim_base_cloud_ptr_->points.emplace_back(sim_base_point);
     }
-}
-
-void POCVLocalPlannerROS::findAngularCmdVel(geometry_msgs::Twist& predict_cmd_vel){
-    predict_cmd_vel.linear.x = 0.0;
-    predict_cmd_vel.linear.y = 0.0;
-    double min_ang_vz_from_ang_az = 1.0*-max_abs_angular_acceleration_*time_step_ + last_cmd_vel_.angular.z;
-    double max_ang_vz_from_ang_az = 1.0*max_abs_angular_acceleration_*time_step_ + last_cmd_vel_.angular.z;
-    double min_ang_vz = std::max(min_ang_vz_from_ang_az, min_angular_velocity_);
-    double max_ang_vz = std::min(max_ang_vz_from_ang_az, max_angular_velocity_);
-    double ang_vz = delta_yaw_from_current_base_ / time_step_;
-    predict_cmd_vel.angular.z = std::min(std::max(ang_vz, min_ang_vz), max_ang_vz);
-    //ROS_INFO("predict_cmd_vel.angular.z = %f", predict_cmd_vel.angular.z);
 }
 
 void POCVLocalPlannerROS::publishCloud() {
@@ -532,6 +524,20 @@ void POCVLocalPlannerROS::publishCloud() {
     path_cloud_pub_.publish(path_cloud_msg);
 }
 
+void POCVLocalPlannerROS::publishSimulatedCloud() {
+    sensor_msgs::PointCloud2 sim_vel_cloud_msg;
+    pcl::toROSMsg(*sim_vel_cloud_ptr_, sim_vel_cloud_msg);
+    sim_vel_cloud_msg.header.frame_id = param_map_frame_;
+    sim_vel_cloud_msg.header.stamp = ros::Time::now();
+    sim_vels_pub_.publish(sim_vel_cloud_msg);
+
+    sensor_msgs::PointCloud2 sim_base_cloud_msg;
+    pcl::toROSMsg(*sim_base_cloud_ptr_, sim_base_cloud_msg);
+    sim_base_cloud_msg.header.frame_id = param_map_frame_;
+    sim_base_cloud_msg.header.stamp = ros::Time::now();
+    sim_poses_pub_.publish(sim_base_cloud_msg);
+}
+
 void POCVLocalPlannerROS::timerPublish(const ros::TimerEvent& event)
 {
     if (is_initial_) {
@@ -539,140 +545,196 @@ void POCVLocalPlannerROS::timerPublish(const ros::TimerEvent& event)
     }
 }
 
+void POCVLocalPlannerROS::findAngularCmdVel(const double& delta_yaw, geometry_msgs::Twist& output_cmd_vel) {
+    output_cmd_vel.linear.x = 0.0;
+    output_cmd_vel.linear.y = 0.0;
+    double min_ang_vz_from_ang_az = 1.0*-max_abs_angular_acceleration_*time_step_ + last_cmd_vel_.angular.z;
+    double max_ang_vz_from_ang_az = 1.0*max_abs_angular_acceleration_*time_step_ + last_cmd_vel_.angular.z;
+    double min_ang_vz = std::max(min_ang_vz_from_ang_az, min_angular_velocity_);
+    double max_ang_vz = std::min(max_ang_vz_from_ang_az, max_angular_velocity_);
+    double ang_vz = delta_yaw / time_step_;
+    output_cmd_vel.angular.z = std::min(std::max(ang_vz, min_ang_vz), max_ang_vz);
+    //ROS_INFO("output_cmd_vel.angular.z = %f", output_cmd_vel.angular.z);
+}
+
+double POCVLocalPlannerROS::findDeltaYaw(const tf2::Quaternion& q_target) {
+    tf2::Quaternion delta_q, inv_q_base_in_map;
+    tf2::convert(base_in_map_tf_msg_.transform.rotation, inv_q_base_in_map);
+    inv_q_base_in_map[3] = -inv_q_base_in_map[3];
+    delta_q = q_target*inv_q_base_in_map;
+    delta_q.normalize();
+    return tf2::getYaw(delta_q);
+}
+
 void POCVLocalPlannerROS::updatePlanner() {
     double frequency = 10.0;
     ros::Rate rate(frequency);
     while (ros::ok()) {
-        ros::Time start_time = ros::Time::now();
+        time_step_ = 1.0/frequency;
+        start_time_ = ros::Time::now();
         ros::spinOnce(); // call callback msg
-        time_step_ = (start_time_ - last_time_).toSec();
-        if (time_step_ < 1.0/frequency) {
-            time_step_ = 1.0/frequency;
-        }
-        tf2::Quaternion delta_q, inv_q_base_in_map, q_goal;
+        tf2::Quaternion q_goal, q_local_point, q_global_point;
+        double delta_yaw;
         double delta_goal_distance = std::sqrt(std::pow(goal_.pose.position.x - base_in_map_tf_msg_.transform.translation.x, 2) +
                                         std::pow(goal_.pose.position.y - base_in_map_tf_msg_.transform.translation.y, 2));
         switch (state_) {
-            case WAIT_FOR_GOAL:
+            case RECOVERY_MODE: // change state from callback global path msg
+                //ROS_INFO("RECOVERY_MODE");
+                if ((ros::Time::now() - last_time_recovery_mode_) < ros::Duration(2.0)) {
+                    use_goal_cost_ = false;
+                    use_path_cost_ = false;
+                    bool found_velocity = findBestVelocity(predict_cmd_vel_);
+                    if (found_velocity) {
+                        cmd_vel_pub_.publish(predict_cmd_vel_);
+                        publishSimulatedCloud();
+                        rate.sleep();
+                    }
+                } else {
+                    use_goal_cost_ = true;
+                    use_path_cost_ = true;
+                    if (!republish_goal_) {
+                        goal_.header.stamp = ros::Time::now();
+                        goal_pub_.publish(goal_);
+                        republish_goal_ = true;
+                        ROS_INFO("Republish goal");
+                    }
+                    rate.sleep();
+                }
+                break;
+
+            case WAIT_FOR_GOAL: // change state from callback global path msg
+                republish_goal_ = false;
                 if (ros::Time::now() - last_time_achieve_goal_ > ros::Duration(10.0)) {
                     ROS_INFO("Waiting for goal ...");
                     last_time_achieve_goal_ = ros::Time::now();
-                    // change state from callback global path msg
+                }
+                if (recovery_mode_count_ < 5) {
+                    if (!achieve_goal_) {
+                        recovery_mode_count_ += 1;
+                        ROS_INFO("\033[1;34m Change to recovery mode: count = %d\033[0m", recovery_mode_count_);
+                        last_time_recovery_mode_ = ros::Time::now();
+                        state_ = RECOVERY_MODE;
+                    }
                 }
                 break;
 
             case ACHIEVE_GOAL:
+                //ROS_INFO("ACHIEVE_GOAL");
                 if (delta_goal_distance < goal_position_tolerance_) {
                     ROS_INFO("\033[1;32m Achieve goal's position and orientation \033[0m");
                     use_path_cost_ = true;
-                    global_point_tolerance_ = temp_global_point_tolerance_; // reset param
+                    //global_point_tolerance_ = temp_global_point_tolerance_; // reset param
                     vel_goal_weight_ = temp_vel_goal_weight_;
                     use_temp_variable_ = false;
                     use_heading_to_local_point_ = true;
                     last_time_achieve_goal_ = ros::Time::now() - ros::Duration(7.0);
+                    achieve_goal_ = true;
+                    recovery_mode_count_ = 0;
                     state_ = WAIT_FOR_GOAL;
                 } else {
-                    global_path_.poses.emplace_back(goal_); // move to goal's position 
-                    global_path_.poses.emplace_back(goal_); // prevent time up
-                    state_ = CHECK_GOAL_POSITION;
+                    global_path_.poses.emplace_back(goal_); // move to goal's position
+                    state_ = CHECK_POSITION;
                 }
                 break;
 
             case Heading_To_Goal:
+                //ROS_INFO("Heading_To_Goal");
                 tf2::convert(goal_.pose.orientation, q_goal);
-                tf2::convert(base_in_map_tf_msg_.transform.rotation, inv_q_base_in_map);
-                inv_q_base_in_map[3] = -inv_q_base_in_map[3];
-                delta_q = q_goal*inv_q_base_in_map;
-                delta_q.normalize();
-                delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
-                if (std::abs(delta_yaw_from_current_base_) > goal_orientation_tolerance_) {
-                    findAngularCmdVel(predict_cmd_vel_);
+                delta_yaw = findDeltaYaw(q_goal);
+                if (std::abs(delta_yaw) > goal_orientation_tolerance_) {
+                    findAngularCmdVel(delta_yaw, predict_cmd_vel_);
                     cmd_vel_pub_.publish(predict_cmd_vel_);
                     state_ = Heading_To_Goal;
                 } else {
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
-                    ROS_WARN("Orientation's error: %f rad", delta_yaw_from_current_base_);
+                    ROS_WARN("Orientation's error: %f rad", delta_yaw);
                     state_ = ACHIEVE_GOAL;
                 }
                 break;
 
-            case CHECK_GOAL_POSITION:
-                state_ = NEAR_GOAL;
-                if (!global_path_.poses.empty()) {
-                    if (delta_goal_distance < goal_position_tolerance_) {
-                        ROS_WARN("Position's error: %f m", delta_goal_distance);
-                        cmd_vel_pub_.publish(geometry_msgs::Twist());
-                        while (!global_path_.poses.empty()){
-                            global_path_.poses.erase(global_path_.poses.begin()); // delete repeat goal that is same goal to avoid time up reach goal
-                        }
-                        global_path_.poses.clear();
-                        local_path_.poses.clear();
-                        state_ = Heading_To_Goal;
+            case REACH_GOAL_POSITION:
+                //ROS_INFO("CHECK_GOAL_POSITION");
+                ROS_WARN("Position's error: %f m", delta_goal_distance);
+                cmd_vel_pub_.publish(geometry_msgs::Twist());
+                global_path_.poses.clear();
+                local_path_.poses.clear();
+                state_ = Heading_To_Goal;
+                break;
+
+            case CHECK_POSITION:
+                //ROS_INFO("CHECK_POSITION");
+                state_ = CHECK_CONSTRAINT;
+                if (delta_goal_distance < goal_position_tolerance_) {
+                    state_ = REACH_GOAL_POSITION;
+                } else if (delta_goal_distance < 0.5) {
+                    ROS_INFO("\033[1;35m Near goal \033[0m");
+                    state_ = NEAR_GOAL;
+                } else if (!global_path_.poses.empty()) {
+                    if (std::abs(global_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x) < global_point_tolerance_ &&
+                            std::abs(global_path_.poses[0].pose.position.y - base_in_map_tf_msg_.transform.translation.y) < global_point_tolerance_) {
+                        state_ = ACHIEVE_GLOBAL_POINT;
                     }
                 }
                 break;
 
             case NEAR_GOAL:
-                state_ = ACHIEVE_GLOBAL_POINT;
-                if (delta_goal_distance < 0.5) {
-                    //ROS_INFO("\033[1;35m Near goal \033[0m");
-                    state_ = TIME_UP_GLOBAL_POINT;
-                    use_path_cost_ = false;
-                    use_heading_to_local_point_ = false;
-                    if (!use_temp_variable_) {
-                        temp_global_point_tolerance_ = global_point_tolerance_;
-                        temp_vel_goal_weight_ = vel_goal_weight_;
-                        use_temp_variable_ = true;
-                        global_point_tolerance_ = goal_position_tolerance_; // adjust param
-                        vel_goal_weight_ = vel_goal_weight_*10000;
-                    }
-                    break;
-                }
-
-            case ACHIEVE_GLOBAL_POINT:
-                state_ = TIME_UP_GLOBAL_POINT;
-                if (!global_path_.poses.empty()) {
-                    if (std::abs(global_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x) < global_point_tolerance_ &&
-                            std::abs(global_path_.poses[0].pose.position.y - base_in_map_tf_msg_.transform.translation.y) < global_point_tolerance_) {
-                        //ROS_INFO("Achieve global point");
-                        cmd_vel_pub_.publish(geometry_msgs::Twist());
-                        global_path_.poses.erase(global_path_.poses.begin());
-                        state_ = Heading_To_GLOBAL_POINT;
-                        receive_path_map_ = false;
-                        last_time_local_goal_ = ros::Time::now();
-                    }
+                //ROS_INFO("NEAR_GOAL");
+                state_ = CHECK_CONSTRAINT;
+                use_path_cost_ = false;
+                use_heading_to_local_point_ = false;
+                if (!use_temp_variable_) {
+                    //temp_global_point_tolerance_ = global_point_tolerance_;
+                    temp_vel_goal_weight_ = vel_goal_weight_;
+                    use_temp_variable_ = true;
+                    //global_point_tolerance_ = goal_position_tolerance_; // adjust param
+                    vel_goal_weight_ = vel_goal_weight_*10000;
                 }
                 break;
+
+            case ACHIEVE_GLOBAL_POINT:
+                //ROS_INFO("ACHIEVE_GLOBAL_POINT");
+                state_ = Heading_To_GLOBAL_POINT;
+                //ROS_INFO("Achieve global point");
+                cmd_vel_pub_.publish(geometry_msgs::Twist());
+                global_path_.poses.erase(global_path_.poses.begin());
+                receive_local_path_map_ = false;
+                last_time_local_goal_ = ros::Time::now();
+                break;
             
-            case TIME_UP_GLOBAL_POINT:
-                state_ = PATH_INTERSECT_OBSTACLE;
+            case CHECK_CONSTRAINT:
+                //ROS_INFO("CHECK_CONSTRAINT");
+                state_ = Heading_To_LOCAL_POINT;
                 if (!global_path_.poses.empty()) {
-                    if (ros::Time::now() - last_time_local_goal_ > ros::Duration(10.0)){
-                        ROS_WARN("Time up to reach global point");
-                        cmd_vel_pub_.publish(geometry_msgs::Twist());
-                        global_path_.poses.erase(global_path_.poses.begin()); // time out to achieve local goal, then skip local goal
-                        receive_path_map_ = false;
-                        state_ = PLAN_PATH;
-                        last_time_local_goal_ = ros::Time::now();
+                    if (ros::Time::now() - last_time_local_goal_ > ros::Duration(10.0)) {
+                        state_ = TIME_UP_GLOBAL_POINT;
+                    } else if (doPathIntersectObstacle() && ros::Time::now() - last_time_intersect_ > ros::Duration(1.0)){
+                        state_ = PATH_INTERSECT_OBSTACLE;
                     }
                 } else {
                     state_ = WAIT_FOR_GOAL;
                 }
+                break;
+
+            case TIME_UP_GLOBAL_POINT:
+                //ROS_INFO("TIME_UP_GLOBAL_POINT");
+                ROS_WARN("Time up to reach global point");
+                cmd_vel_pub_.publish(geometry_msgs::Twist());
+                global_path_.poses.erase(global_path_.poses.begin()); // time out to achieve local goal, then skip local goal
+                receive_local_path_map_ = false;
+                state_ = PLAN_PATH;
+                last_time_local_goal_ = ros::Time::now();
                 break;  
 
             case Heading_To_GLOBAL_POINT:
+                //ROS_INFO("Heading_To_GLOBAL_POINT");
                 state_ = PLAN_PATH;
                 if (!global_path_.poses.empty()) {
                     double heading_global_yaw = std::atan2(global_path_.poses[0].pose.position.y - base_in_map_tf_msg_.transform.translation.y,
                                                                 global_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x);
-                    q_global_point_.setRPY(0.0, 0.0, heading_global_yaw);
-                    tf2::convert(base_in_map_tf_msg_.transform.rotation, inv_q_base_in_map);
-                    inv_q_base_in_map[3] = -inv_q_base_in_map[3];
-                    delta_q = q_global_point_*inv_q_base_in_map;
-                    delta_q.normalize();
-                    delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
-                    if (std::abs(delta_yaw_from_current_base_) > 0.1){
-                        findAngularCmdVel(predict_cmd_vel_);
+                    q_global_point.setRPY(0.0, 0.0, heading_global_yaw);
+                    delta_yaw = findDeltaYaw(q_global_point);
+                    if (std::abs(delta_yaw) > 0.3) {
+                        findAngularCmdVel(delta_yaw, predict_cmd_vel_);
                         cmd_vel_pub_.publish(predict_cmd_vel_);
                         state_ = Heading_To_GLOBAL_POINT;
                     }
@@ -680,12 +742,13 @@ void POCVLocalPlannerROS::updatePlanner() {
                 break; 
 
             case PLAN_PATH:
-                state_ = PATH_INTERSECT_OBSTACLE;
+                //ROS_INFO("PLAN_PATH");
+                state_ = CHECK_CONSTRAINT;
                 if (!global_path_.poses.empty()) {
                     //ROS_INFO("Plan local path");
                     cmd_vel_pub_.publish(geometry_msgs::Twist());
-                    receive_path_map_ = createPathMap();
-                    if (!receive_path_map_) {
+                    receive_local_path_map_ = createPathMap();
+                    if (!receive_local_path_map_) {
                         state_ = PLAN_PATH;
                     }
                 } else {
@@ -694,17 +757,16 @@ void POCVLocalPlannerROS::updatePlanner() {
                 break;
 
             case PATH_INTERSECT_OBSTACLE:
-                state_ = Heading_To_LOCAL_POINT;
-                if (doPathIntersectObstacle() && ros::Time::now() - last_time_intersect_ > ros::Duration(1.0)){
-                    ROS_WARN("Path intersect the obstacle");
-                    cmd_vel_pub_.publish(geometry_msgs::Twist());
-                    state_ = PLAN_PATH;
-                    receive_path_map_ = false;
-                    last_time_intersect_ = ros::Time::now();
-                }
+                //ROS_INFO("PATH_INTERSECT_OBSTACLE");
+                ROS_WARN("Path intersect the obstacle");
+                cmd_vel_pub_.publish(geometry_msgs::Twist());
+                state_ = PLAN_PATH;
+                receive_local_path_map_ = false;
+                last_time_intersect_ = ros::Time::now();
                 break; 
 
             case Heading_To_LOCAL_POINT:
+                //ROS_INFO("Heading_To_LOCAL_POINT");
                 state_ = SIMULATE_VELOCITY;
                 if (!heading_local_path_.poses.empty()) {
                     if (std::abs(heading_local_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x) < 0.3 &&
@@ -715,17 +777,13 @@ void POCVLocalPlannerROS::updatePlanner() {
                     if (use_heading_to_local_point_) {
                         double heading_local_yaw = std::atan2(heading_local_path_.poses[0].pose.position.y - base_in_map_tf_msg_.transform.translation.y,
                                                                     heading_local_path_.poses[0].pose.position.x - base_in_map_tf_msg_.transform.translation.x);
-                        q_local_point_.setRPY(0.0,0.0,heading_local_yaw);
-                        tf2::convert(base_in_map_tf_msg_.transform.rotation, inv_q_base_in_map);
-                        inv_q_base_in_map[3] = -inv_q_base_in_map[3];
-                        delta_q = q_local_point_*inv_q_base_in_map;
-                        delta_q.normalize();
-                        delta_yaw_from_current_base_ = tf2::getYaw(delta_q);
-                        //ROS_INFO("delta_yaw_from_current_base_ = %f", delta_yaw_from_current_base_);
-                        if (std::abs(delta_yaw_from_current_base_) > 0.3) {
+                        q_local_point.setRPY(0.0,0.0,heading_local_yaw);
+                        delta_yaw = findDeltaYaw(q_local_point);
+                        //ROS_INFO("delta_yaw = %f", delta_yaw);
+                        if (std::abs(delta_yaw) > 0.5) {
                             local_point_pub_.publish(heading_local_path_.poses[0]);
-                            findAngularCmdVel(predict_cmd_vel_);
-                            if (wait_heading_to_local_point_){
+                            findAngularCmdVel(delta_yaw, predict_cmd_vel_);
+                            if (wait_heading_to_local_point_) {
                                 cmd_vel_pub_.publish(predict_cmd_vel_);
                                 state_ = Heading_To_LOCAL_POINT;
                             } else {
@@ -737,15 +795,13 @@ void POCVLocalPlannerROS::updatePlanner() {
                 break;  
 
             case SIMULATE_VELOCITY:
-                state_ = CHECK_GOAL_POSITION;
-                if (!receive_path_map_) {
+                //ROS_INFO("SIMULATE_VELOCITY");
+                state_ = CHECK_POSITION;
+                if (!receive_local_path_map_) {
                     state_ = PLAN_PATH;
                 } else {
                     global_point_pub_.publish(global_path_.poses[0]);
-                    start_time_ = ros::Time::now();
                     bool found_velocity = findBestVelocity(predict_cmd_vel_);
-                    last_time_ = ros::Time::now();
-                    //ROS_WARN("Time execution to find best velocity : %f seconds", (last_time_ - start_time_).toSec());
                     if (found_velocity) {
                         if (wait_heading_to_local_point_) {
                             predict_cmd_vel_.angular.z = 0.0;
@@ -753,24 +809,13 @@ void POCVLocalPlannerROS::updatePlanner() {
                             predict_cmd_vel_.angular.z = cmd_ang_vz_;
                         }
                         cmd_vel_pub_.publish(predict_cmd_vel_);
+                        publishSimulatedCloud();
+                        last_time_ = ros::Time::now();
                         if (debug_time_execution_) {
-                            ROS_WARN("Time execution of local planner for simulating velocity : %f seconds", (ros::Time::now() - start_time).toSec());     
+                            ROS_WARN("Time execution of local planner for simulating velocity : %f seconds", (last_time_ - start_time_).toSec());     
                         }
-                        
-                        sensor_msgs::PointCloud2 sim_vel_cloud_msg;
-                        pcl::toROSMsg(*sim_vel_cloud_ptr_, sim_vel_cloud_msg);
-                        sim_vel_cloud_msg.header.frame_id = param_map_frame_;
-                        sim_vel_cloud_msg.header.stamp = ros::Time::now();
-                        sim_vels_pub_.publish(sim_vel_cloud_msg);
-
-                        sensor_msgs::PointCloud2 sim_base_cloud_msg;
-                        pcl::toROSMsg(*sim_base_cloud_ptr_, sim_base_cloud_msg);
-                        sim_base_cloud_msg.header.frame_id = param_map_frame_;
-                        sim_base_cloud_msg.header.stamp = ros::Time::now();
-                        sim_poses_pub_.publish(sim_base_cloud_msg);
-
                         rate.sleep();
-                    } else{
+                    } else {
                         cmd_vel_pub_.publish(geometry_msgs::Twist());
                     }
                 }

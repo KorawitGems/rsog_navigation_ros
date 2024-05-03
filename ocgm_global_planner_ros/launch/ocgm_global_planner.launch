@@ -8,11 +8,12 @@
     <param name="map_frame" type="string" value="map"/>
     <param name="odom_frame" type="string" value="odom"/>
     <param name="base_frame" type="string" value="base_footprint"/>
+    <param name="plan/time_up" type="double" value="0.1"/>
     <param name="obstacle_map/radius" type="double" value="1.0"/>
     <param name="obstacle_map/weight" type="double" value="100.0"/>
     <param name="obstacle_map/robot_radius" type="double" value="0.4"/>
     <param name="obstacle_map/robot_weight" type="double" value="1000.0"/>
-    <param name="goal_cost/weight" type="double" value="5.0"/>
+    <param name="goal_cost/weight" type="double" value="20.0"/>
     <param name="move_cost/weight" type="double" value="10.0"/>
   </node>
 
