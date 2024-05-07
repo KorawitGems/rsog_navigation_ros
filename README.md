@@ -35,7 +35,7 @@ roslaunch apmc_localization_ros apmc_localization.launch
 ```
 
 <p align="center">
-  <img src="image/localization_graph.png" width="640" height="360"/>
+  <img src="image/localization_compare.png" width="640" height="360"/>
 </p>
 
 # ocgm_global_planner
